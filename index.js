@@ -136,7 +136,7 @@ uid: 7
 可用的元信息键：comment（标题）、key / keysecondary（关键词，用逗号分隔）、constant（常驻，true/false）、disable（禁用，true/false）、selective（关键词触发，true/false）、excludeRecursion（非递归，true/false）、preventRecursion（不触发后续递归，true/false）、order（顺序，数字）、position（位置，数字）、depth（深度，数字）。其它键会被忽略。
 
 规则：
-- book 与 uid 必须照抄上面列出的条目，绝不要自己编造，也绝不要去动没有列出的条目。
+- book 与 uid 必须照抄上面列出的条目，绝不要自己编造，也绝不要去动没有列出的条目。书名里若带《》「」【】<> 等符号，请连同符号一字不差地照抄（这些最容易被漏写）。
 - 新建条目默认就是「非递归 + 不触发后续递归」；若没给 key 且没显式写 constant，则默认设为常驻。需要让新条目参与递归时，自己写 excludeRecursion: false / preventRecursion: false。
 - 写新建或编辑的正文时，请沿用这本世界书现有条目的格式与风格（缩进、<scene_xxx> 包裹、「键: 值」式的层级），让新内容与周围保持一致。
 - 正文会原样保存、不做任何宏替换：{{user}} 之类、人物本名、缩进结构都会原封不动地写进条目。
@@ -774,7 +774,8 @@ function parseOneLorebookBlock(inner) {
 
     const ALLOWED = ['create', 'edit', 'patch', 'delete'];
     if (!ALLOWED.includes(action)) return { error: `未知或缺失的 action：「${(headers.action || '').trim()}」` };
-    if (!op.book) return { error: '缺少 book（世界书名）' };
+    // book is resolved at apply time (against the books actually in scope), so a
+    // mangled or omitted name no longer hard-fails here.
     if (action === 'create') {
         if (op.fields.content == null || !String(op.fields.content).trim()) return { error: 'create 缺少 content 正文' };
     } else if (op.uid == null || Number.isNaN(op.uid)) {
@@ -884,6 +885,37 @@ function lbSummaryOf(list) {
  * collected for the UI; an op never half-applies (patch validates its anchor first).
  * Returns { snapshots, results, summary, applied }.
  */
+// Models often retype a book name imperfectly when it contains brackets/quotes
+// (《》「」【】<> …) — dropping them, or a stray letter. Normalize away the bits
+// models tend to mangle so we can still recognise the intended book.
+function lbNormalizeName(s) {
+    return String(s == null ? '' : s)
+        .toLowerCase()
+        .replace(/[\s《》「」『』【】〈〉«»()（）\[\]<>{}"'“”‘’`·・|/\\]/g, '');
+}
+
+// Resolve op.book to one of the books actually in scope (lbBookNames). Exact match
+// first, then bracket/quote-insensitive match, then loose containment, and finally
+// — since the picker usually targets a single book — fall back to the only book in
+// scope. Returns the real name, or null if it genuinely can't be pinned down.
+function resolveBookName(opBook, scope) {
+    if (!Array.isArray(scope) || !scope.length) return null;
+    const raw = (opBook == null ? '' : String(opBook)).trim();
+    if (scope.includes(raw)) return raw;                       // exact
+    const nb = lbNormalizeName(raw);
+    if (nb) {
+        const exactNorm = scope.filter((n) => lbNormalizeName(n) === nb);
+        if (exactNorm.length === 1) return exactNorm[0];
+        const loose = scope.filter((n) => {
+            const nn = lbNormalizeName(n);
+            return nn && (nn.includes(nb) || nb.includes(nn));
+        });
+        if (loose.length === 1) return loose[0];
+    }
+    if (scope.length === 1) return scope[0];                   // only one book shown → it must be that one
+    return null;
+}
+
 async function applyLorebookOps(ops) {
     const mod = await getWiEditApi();
     if (!mod) throw new Error('世界书模块不可用');
@@ -893,10 +925,12 @@ async function applyLorebookOps(ops) {
 
     const byBook = new Map();
     for (const op of ops) {
-        if (!op || !op.action || !op.book) { skip(op, '操作不完整'); continue; }
-        if (!lbBookNames.includes(op.book)) { skip(op, `世界书「${op.book}」不在本次范围内`); continue; }
-        if (!byBook.has(op.book)) byBook.set(op.book, []);
-        byBook.get(op.book).push(op);
+        if (!op || !op.action) { skip(op, '操作不完整'); continue; }
+        const book = resolveBookName(op.book, lbBookNames);
+        if (!book) { skip(op, op.book ? `世界书「${op.book}」不在本次范围内` : '未指定世界书，且无法自动判定'); continue; }
+        op.book = book;   // normalize to the real name ST knows
+        if (!byBook.has(book)) byBook.set(book, []);
+        byBook.get(book).push(op);
     }
 
     const snapshots = [];
