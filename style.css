@@ -591,13 +591,31 @@
 /* while configuring, hide the mode toolbar so the chat + input stay on screen */
 #so-window.so-settings-open #so-lb-bar { display: none; }
 
+/* 诊断模式「精选世界书条目」栏。复用世界书 .so-lb-* 选条目控件，但把 --so-lb-accent 局部改写成
+   诊断的蓝色调（--so-accent），整套控件一并换肤，无需重复样式。 */
+#so-diag-bar {
+    --so-lb-accent: var(--so-accent);
+    display: none;
+    flex: 0 0 auto;
+    flex-direction: column;
+    gap: 6px;
+    padding: 9px 12px;
+    border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
+    background: color-mix(in srgb, var(--so-accent) 7%, transparent);
+}
+#so-window.so-diag-on #so-diag-bar { display: flex; }
+#so-window.so-settings-open #so-diag-bar { display: none; }
+/* L2 混合开关 + 选条目区只在 L1（用精选条目）开启后才出现 */
+#so-diag-picker { display: none; flex-direction: column; gap: 6px; }
+#so-diag-bar.so-diag-usesel-on #so-diag-picker { display: flex; }
+
 .so-lb-row {
     display: flex;
     align-items: center;
     gap: 8px;
 }
 .so-lb-icon { color: var(--so-lb-accent); opacity: 0.85; flex: 0 0 auto; }
-#so-lb-book {
+#so-lb-book, #so-diag-book {
     flex: 1 1 auto;
     min-width: 0;
     padding: 6px 8px;
@@ -608,7 +626,7 @@
     font-family: inherit;
     font-size: 0.9em;
 }
-#so-lb-book:focus { outline: none; border-color: var(--so-lb-accent); }
+#so-lb-book:focus, #so-diag-book:focus { outline: none; border-color: var(--so-lb-accent); }
 .so-lb-check {
     display: flex;
     align-items: center;

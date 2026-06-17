@@ -90,7 +90,7 @@ const LOREBOOK_SYSTEM_PROMPT =
 1) 元信息：每行一个「键: 值」（action、book、uid，以及要改的字段）。
 2) 长正文（content 或 replace）：放进围栏 <<<名称 … 名称>>> 里。围栏内【原样书写，无需任何转义】——引号、冒号、大括号、<标签>、换行全都照写。注意：围栏里要【直接按回车换行】，不要用「反斜杠加 n」那种转义写法（这里不是 JSON）。
 
-四种 action：
+六种 action：
 
 · create（新建条目）：
 <LorebookEdit>
@@ -129,6 +129,17 @@ uid: 3
 content>>>
 </LorebookEdit>
 （edit 也可以只改元信息而不动正文，例如只写一行 constant: true 把它设成常驻。）
+
+· append（在条目末尾追加）/ prepend（在条目开头前插）—— 只想在现有正文的最后 / 最前【加】一段、而不动已有内容时用它，最稳妥、不需要锚点：
+<LorebookEdit>
+action: append
+book: 世界书名
+uid: 12
+<<<content
+（要追加到条目末尾的新正文）
+content>>>
+</LorebookEdit>
+（prepend 用法相同，只是插到最前。插入是【原样拼接】、不会自动加空行；想另起一行，就在 content 的开头或结尾自己留一个空行。）
 
 · delete（删除条目）：
 <LorebookEdit>
@@ -338,6 +349,13 @@ const AUTO_DIAGNOSE_WRITE_BACK = true;
 // 衍生写回时照样补上它（见 writeUpdateBlockToMessage），令状态栏像官方更新那样出现——与官方行为一致，对任何 MVU 卡都安全。
 const STATUS_PLACEHOLDER = '<StatusPlaceHolderImpl/>';
 
+// 诊断模式「精选世界书条目」总开关（用户功能请求）。开时诊断模式多出一条选条目栏（#so-diag-bar）：
+// 可【按本聊天】挑选哪些世界书条目喂给诊断（手动 + 自动），无视条目在 ST 里的启用 / 禁用状态——
+// 解决「把变量规则条目禁用后诊断就看不到」与「全量太吵」的两难。关掉（=false）时：选条目栏不渲染、
+// 覆盖永不被读、两个开关被忽略，诊断完全退回原行为（worldInfoMode 扫描 + collectMvuUpdateRules）。
+// 被 buildWindow（隐藏栏）+ 两处诊断喂料点（diagPickerActive 门控）实读；constants-meta 元测试守它确被引用。
+const ENABLE_DIAG_WI_PICKER = true;
+
 // 编译器上下文模式开关（无 UI、纯代码——改这一行即可整体切换）：
 //   true  = 全量匹配：每次过渡都喂【全史 + 角色卡 + 世界书】（与剧情参谋同级），写拍 / 核验信息最全，
 //           但每次调用最贵（长对话 + 世界书扫描；高消息量 RP 下 token / 延迟显著上升，注意上下文窗口上限）。
@@ -500,6 +518,9 @@ let planFloatSlot = null;
 // Per-entry selection for a single targeted book: { [bookName]: Set<uid> }.
 // A book absent here (or null) means "send every entry" (the default).
 let lbEntryFilter = {};
+// 诊断模式「精选条目」的当前选择（内存镜像，随聊天从元数据载入 / 回写）：{ [书名]: Set<uid> }。
+// 与 lbEntryFilter 同形，但【按聊天持久化】（见 DIAG_WI_META_KEY / loadDiagSelForChat / persistDiagSel）。
+let diagEntrySel = {};
 // Last prompt actually sent (for the debug viewer), captured in onSend.
 let lastPrompt = null;
 let lastPromptMeta = null;
@@ -878,6 +899,100 @@ async function stripMvuRuleContents(text) {
 }
 
 /* ------------------------------------------------------------------ *
+ * 诊断模式「精选世界书条目」喂料（用户功能请求；总开关 ENABLE_DIAG_WI_PICKER）。
+ * 与世界书扫描（buildWorldInfo）分开：精选直接从【原始世界书】按本聊天保存的 uid 选择取条目，
+ * 无视 ST 的启用 / 禁用状态——这正是要点（被禁用的变量规则条目也能喂给诊断）。
+ * ------------------------------------------------------------------ */
+// 诊断「精选条目」当前是否生效：总开关开 + 本聊天 L1（use）已勾选。两处喂料点用它决定走精选还是原行为。
+function diagPickerActive() {
+    return ENABLE_DIAG_WI_PICKER && getDiagWiMeta().use;
+}
+
+// 跑一次 ST 的 dry-run 世界书扫描（与 buildWorldInfo('st') 同输入），取当前【真正被激活】的条目，
+// 整理成 { 书名: Set<uid> }。用于诊断精选的两处：首开快照（蓝灯 + 当前命中绿灯）与混合模式（并入当前命中绿灯）。
+// 失败 / 老版本 ST 无 allActivatedEntries 时回 {}（调用方自然退化）。
+async function getActiveScanUids() {
+    const ctx = getCtx();
+    try {
+        if (typeof ctx.getWorldInfoPrompt !== 'function') return {};
+        const coreChat = (ctx.chat || []).filter((m) => m && !m.is_system && typeof m.mes === 'string');
+        const chatForWI = coreChat
+            .map((m) => `${m.name || (m.is_user ? ctx.name1 : ctx.name2)}: ${m.mes}`)
+            .reverse();
+        let card = {};
+        try { card = ctx.getCharacterCardFields() || {}; } catch (e) { /* group / none */ }
+        const globalScanData = {
+            personaDescription: card.persona,
+            characterDescription: card.description,
+            characterPersonality: card.personality,
+            characterDepthPrompt: card.charDepthPrompt,
+            scenario: card.scenario,
+            creatorNotes: card.creatorNotes,
+            trigger: 'normal',
+        };
+        const budget = await getWiScanBudget();
+        const res = await ctx.getWorldInfoPrompt(chatForWI, budget, /*isDryRun*/ true, globalScanData);
+        return activeUidsFromScan(res && res.allActivatedEntries);
+    } catch (e) {
+        console.warn('[Story Oracle] Active WI scan failed:', e);
+        return {};
+    }
+}
+
+// 诊断精选喂料。选择从【元数据】读（无状态——自动诊断窗口关着也对），按选中 uid 从原始书取条目，逐条
+// substituteParams（诊断只读不编辑，故可展开宏，与 collectMvuRuleContents 一致）。混合模式（L2）再并入主聊天
+// 当前命中的【绿灯】（蓝灯不并——要么已选、要么用户有意不选）。返回 { block, selectedEntries }：block 拼进
+// 诊断的 worldInfoBlock，selectedEntries 供 diagSelHasRules 判断是否含变量规则条目。无选择 / 无法访问模块时回空。
+async function buildDiagSelectedWi() {
+    const ctx = getCtx();
+    const meta = getDiagWiMeta();
+    const mod = await getWiEditApi();
+    if (!mod) return { block: '', selectedEntries: [] };
+
+    // 选择映射（书名 -> Set<uid>），只留非空选择。
+    let selMap = {};
+    for (const [b, s] of Object.entries(deserializeDiagSel(meta.sel))) if (s.size) selMap[b] = s;
+
+    // 混合模式：把主聊天当前命中的绿灯 uid 并进选择。
+    if (meta.hybrid) {
+        try {
+            const active = await getActiveScanUids();           // { 书名: Set<uid> }（含蓝 + 绿）
+            const greens = {};
+            for (const name of Object.keys(active)) {
+                let data; try { data = await mod.loadWorldInfo(name); } catch (e) { continue; }
+                const all = data && data.entries ? Object.values(data.entries) : [];
+                const g = new Set();
+                for (const e of all) {
+                    if (e && active[name].has(Number(e.uid)) && e.constant !== true) g.add(Number(e.uid)); // 仅绿灯
+                }
+                if (g.size) greens[name] = g;
+            }
+            selMap = mergeHybridUids(selMap, greens);
+        } catch (e) { /* 混合失败就只用精选 */ }
+    }
+
+    const books = Object.keys(selMap);
+    if (!books.length) return { block: '', selectedEntries: [] };
+
+    const subst = (v) => { try { return ctx.substituteParams(String(v == null ? '' : v)); } catch (_) { return String(v == null ? '' : v); } };
+    const blocks = [];
+    const selectedEntries = [];
+    for (const name of books) {
+        let data; try { data = await mod.loadWorldInfo(name); } catch (e) { continue; }
+        if (!data || !data.entries) continue;
+        const want = selMap[name];
+        const entries = Object.values(data.entries)
+            .filter((e) => e && want.has(Number(e.uid)) && typeof e.content === 'string' && e.content.trim())
+            .sort((a, b) => (Number(a.displayIndex ?? a.uid) - Number(b.displayIndex ?? b.uid)));
+        if (!entries.length) continue;
+        for (const e of entries) selectedEntries.push(e);
+        const body = entries.map((e) => subst(e.content).trim()).join('\n\n');
+        blocks.push(`=== 世界书：${name}（精选 ${entries.length} 条）===\n${body}`);
+    }
+    return { block: blocks.join('\n\n'), selectedEntries };
+}
+
+/* ------------------------------------------------------------------ *
  * Lorebook mode — read & edit world books.
  *
  * Reuses the same world-info.js module loaded for the 'all'/'st' scans, but
@@ -1116,7 +1231,7 @@ function parseOneLorebookBlock(inner) {
     }
     if (cFence.body != null) op.fields.content = lbBackstopNewlines(cFence.body);
 
-    const ALLOWED = ['create', 'edit', 'patch', 'delete'];
+    const ALLOWED = ['create', 'edit', 'patch', 'delete', 'prepend', 'append'];
     if (!ALLOWED.includes(action)) return { error: `未知或缺失的 action：「${(headers.action || '').trim()}」` };
     // book is resolved at apply time (against the books actually in scope), so a
     // mangled or omitted name no longer hard-fails here.
@@ -1124,6 +1239,9 @@ function parseOneLorebookBlock(inner) {
         if (op.fields.content == null || !String(op.fields.content).trim()) return { error: 'create 缺少 content 正文' };
     } else if (op.uid == null || Number.isNaN(op.uid)) {
         return { error: `${action} 缺少有效的 uid` };
+    }
+    if (action === 'prepend' || action === 'append') {
+        if (op.fields.content == null || !String(op.fields.content).trim()) return { error: `${action} 缺少要插入的 content 正文` };
     }
     if (action === 'edit') {
         const hasContent = op.fields.content != null;
@@ -1222,17 +1340,19 @@ function lbFuzzyReplace(content, anchor, replace) {
 
 function lbOpLabel(op) {
     if (!op) return '(无效操作)';
-    const a = ({ create: '新增', edit: '改', patch: '补丁', delete: '删除' })[op.action] || op.action || '?';
+    const a = ({ create: '新增', edit: '改', patch: '补丁', delete: '删除', prepend: '前插', append: '追加' })[op.action] || op.action || '?';
     if (op.action === 'create') return `${a}「${(op.fields && op.fields.comment) || '(无标题)'}」`;
     return `${a} uid=${op.uid}`;
 }
 function lbSummaryOf(list) {
-    const c = { create: 0, edit: 0, patch: 0, delete: 0 };
+    const c = { create: 0, edit: 0, patch: 0, delete: 0, prepend: 0, append: 0 };
     for (const x of list) if (x && x.action in c) c[x.action]++;
     const bits = [];
     if (c.create) bits.push(`新增 ${c.create}`);
     if (c.edit) bits.push(`改 ${c.edit}`);
     if (c.patch) bits.push(`补丁 ${c.patch}`);
+    if (c.prepend) bits.push(`前插 ${c.prepend}`);
+    if (c.append) bits.push(`追加 ${c.append}`);
     if (c.delete) bits.push(`删除 ${c.delete}`);
     return bits.join(' · ') || '无改动';
 }
@@ -1327,6 +1447,18 @@ async function applyLorebookOps(ops) {
                 applyFieldsToEntry(entry, op.fields);   // optional scalar tweaks alongside
                 results.push({ ok: true, action: 'patch', label: `补丁 uid=${op.uid}${entry.comment ? `「${entry.comment}」` : ''}` });
                 touched = true;
+            } else if (op.action === 'prepend' || op.action === 'append') {
+                if (op.uid == null || !(op.uid in data.entries)) { skip(op, `uid=${op.uid} 不存在`); continue; }
+                const entry = data.entries[op.uid];
+                const insert = op.fields.content != null ? String(op.fields.content) : '';
+                if (!insert) { skip(op, `${op.action} 没有要插入的正文`); continue; }
+                const cur = entry.content || '';
+                entry.content = op.action === 'prepend' ? insert + cur : cur + insert;   // verbatim concat, no auto separator
+                const rest = { ...op.fields }; delete rest.content;   // don't let content overwrite via applyFieldsToEntry
+                applyFieldsToEntry(entry, rest);                      // optional scalar tweaks alongside
+                const a = op.action === 'prepend' ? '前插' : '追加';
+                results.push({ ok: true, action: op.action, label: `${a} uid=${op.uid}${entry.comment ? `「${entry.comment}」` : ''}` });
+                touched = true;
             } else { // edit
                 if (op.uid == null || !(op.uid in data.entries)) { skip(op, `uid=${op.uid} 不存在`); continue; }
                 applyFieldsToEntry(data.entries[op.uid], op.fields);
@@ -1378,6 +1510,9 @@ const ARC_META_KEY = MODULE + '_arc';
 //   _summary 用户粘贴的运行总结 / 前情提要
 const CONVO_META_KEY = MODULE + '_convo';
 const SUMMARY_META_KEY = MODULE + '_summary';
+// 用户功能请求：诊断模式「精选世界书条目」按【当前聊天】持久化（与 plan/convo/summary 同风格）。
+//   形状：{ use:bool（L1 主开关）, hybrid:bool（L2 混合）, target:''（书目标，''=全部激活）, sel:{ [书名]:uid[] } }
+const DIAG_WI_META_KEY = MODULE + '_diagwi';
 
 function getChatMetadataSafe() {
     try {
@@ -1464,6 +1599,96 @@ function setSummary(text) {
     if (t.trim()) md[SUMMARY_META_KEY] = t; else delete md[SUMMARY_META_KEY];
     saveChatMetadata();
     return true;
+}
+
+/* ------------------------------------------------------------------ *
+ * 用户功能请求：诊断模式「精选世界书条目」——按【当前聊天】持久化的选择（与 plan/convo/summary 同风格：
+ * 随聊天保存、随切换刷新、全默认时删键）。元数据形状见 DIAG_WI_META_KEY。两层开关：
+ *   use    L1 主开关——开了才精选；关 = 诊断完全走原行为（worldInfoMode 扫描 + collectMvuUpdateRules）
+ *   hybrid L2 混合——精选条目 ∪ 主聊天当前触发的绿灯条目（仅 use 开时有意义）
+ * 选择本体 sel:{书名:uid[]} 与内存镜像 diagEntrySel:{书名:Set<uid>} 互转。纯函数可单测。
+ * ------------------------------------------------------------------ */
+// 内存 { 书名: Set<uid> } -> 可持久化 { 书名: uid[]（升序）}。空集合的书也保留键（= 该书选了零条）。
+function serializeDiagSel(map) {
+    const out = {};
+    for (const [book, set] of Object.entries(map || {})) {
+        if (!(set instanceof Set)) continue;
+        out[book] = [...set].map(Number).filter((n) => Number.isFinite(n)).sort((a, b) => a - b);
+    }
+    return out;
+}
+
+// 反向：{ 书名: uid[] } -> { 书名: Set<uid> }。容错非数组 / 非数字。
+function deserializeDiagSel(obj) {
+    const out = {};
+    if (obj && typeof obj === 'object') {
+        for (const [book, arr] of Object.entries(obj)) {
+            out[book] = new Set((Array.isArray(arr) ? arr : []).filter((x) => x != null && x !== '').map(Number).filter((n) => Number.isFinite(n)));
+        }
+    }
+    return out;
+}
+
+// 读本聊天的诊断选条目元数据（始终回带默认值的对象，绝不返回 null）。
+function getDiagWiMeta() {
+    const md = getChatMetadataSafe();
+    const m = md ? md[DIAG_WI_META_KEY] : null;
+    return {
+        use: !!(m && m.use),
+        hybrid: !!(m && m.hybrid),
+        target: (m && typeof m.target === 'string') ? m.target : '',
+        sel: (m && m.sel && typeof m.sel === 'object') ? m.sel : {},
+    };
+}
+
+// 写本聊天的诊断选条目元数据（全默认 = 删键，保持元数据干净）。
+function setDiagWiMeta(obj) {
+    const md = getChatMetadataSafe();
+    if (!md) return false;
+    const o = obj || {};
+    const sel = (o.sel && typeof o.sel === 'object') ? o.sel : {};
+    const empty = !o.use && !o.hybrid && !o.target && !Object.keys(sel).length;
+    if (empty) delete md[DIAG_WI_META_KEY];
+    else md[DIAG_WI_META_KEY] = { use: !!o.use, hybrid: !!o.hybrid, target: o.target || '', sel };
+    saveChatMetadata();
+    return true;
+}
+
+// 把内存选择 diagEntrySel 回写元数据，保留 use/hybrid/target。每次勾选 / 快捷按钮后调用。
+function persistDiagSel() {
+    const cur = getDiagWiMeta();
+    setDiagWiMeta({ use: cur.use, hybrid: cur.hybrid, target: cur.target, sel: serializeDiagSel(diagEntrySel) });
+}
+
+// 纯函数：选中的条目里是否含至少一条 [mvu_update] 变量规则条目（按 comment 匹配，复用 MVU_UPDATE_TAG）。
+// WYSIWYG 提醒用：精选模式下一条规则都没选时，诊断可能不准。entries = 选中条目对象数组。
+function diagSelHasRules(entries) {
+    return (Array.isArray(entries) ? entries : []).some((e) => e && MVU_UPDATE_TAG.test(e.comment || ''));
+}
+
+// 纯函数：ST 扫描结果 allActivatedEntries（Set<entry> 或数组）-> { 书名: Set<uid> }。
+// 只含当前【真正被激活】的条目（常驻蓝灯 + 命中关键词的绿灯）；筛绿灯交给调用方。
+function activeUidsFromScan(activated) {
+    const out = {};
+    const list = activated instanceof Set ? [...activated] : (Array.isArray(activated) ? activated : []);
+    for (const e of list) {
+        if (!e || e.world == null || e.uid == null) continue;
+        if (!out[e.world]) out[e.world] = new Set();
+        out[e.world].add(Number(e.uid));
+    }
+    return out;
+}
+
+// 纯函数：把混合模式要追加的 uid（extra）并入精选选择（base）。二者均为 { 书名: Set<uid> }；
+// 返回新并集，不改入参。
+function mergeHybridUids(base, extra) {
+    const out = {};
+    for (const [book, set] of Object.entries(base || {})) out[book] = new Set(set);
+    for (const [book, set] of Object.entries(extra || {})) {
+        if (!out[book]) out[book] = new Set();
+        for (const u of set) out[book].add(u);
+    }
+    return out;
 }
 
 // Non-system message count of the MAIN chat — used to derive "messages since
@@ -1634,6 +1859,7 @@ function onChatChanged() {
     checkPlanReminder();
     loadConvoForChat();   // 用户功能请求：把本聊天保存的侧聊历史载入窗口（per-chat 持久化）
     refreshSummaryUI();   // 用户功能请求：刷新本聊天的运行概要编辑器
+    loadDiagSelForChat(); // 用户功能请求：载入本聊天的诊断「精选世界书条目」选择
 }
 
 /* ------------------------------------------------------------------ *
@@ -3144,9 +3370,15 @@ async function runAutoDiagnose(ctx, s) {
     if (s.mode === 'profile' && !s.profileId) return;
 
     // 自建诊断上下文（不碰窗口共享的 worldInfoBlock / diagStatData / diagLatestUpdate）。
-    let wiBlock = await buildWorldInfo(s.worldInfoMode === 'all' ? 'all' : 'st');
-    const mvuRules = await collectMvuUpdateRules(wiBlock);
-    if (mvuRules.length) wiBlock = [wiBlock, ...mvuRules].filter(Boolean).join('\n\n');
+    let wiBlock;
+    if (diagPickerActive()) {
+        // 精选模式（用户功能请求）：只喂本聊天挑选的条目（无视启用 / 禁用；L2 混合并入当前命中绿灯），不自动补规则。
+        wiBlock = (await buildDiagSelectedWi()).block;
+    } else {
+        wiBlock = await buildWorldInfo(s.worldInfoMode === 'all' ? 'all' : 'st');
+        const mvuRules = await collectMvuUpdateRules(wiBlock);
+        if (mvuRules.length) wiBlock = [wiBlock, ...mvuRules].filter(Boolean).join('\n\n');
+    }
     const stat = await getMvuStatData();
     const statStr = stat ? JSON.stringify(stat, null, 2) : '';
     const { idx: aiIdx, text: latestReply } = getLatestAiMessage();
@@ -3513,6 +3745,36 @@ function buildWindow() {
             <div class="so-hint" id="so-sysprompt-which-hint"></div>
         </div>
 
+        <div id="so-diag-bar">
+            <label class="so-check so-lb-check"><input id="so-diag-usesel" type="checkbox"><span>诊断使用精选世界书条目（关闭则用默认扫描）</span></label>
+            <div class="so-hint">开启后可【按本聊天】挑选要喂给诊断的世界书条目，无视其在 ST 里的启用 / 禁用状态——解决「禁用了变量规则条目后诊断就看不到」与「全量太吵」的两难。首次开启会按当前激活情况预选一份，之后随你增删、按聊天记忆。</div>
+            <div id="so-diag-picker">
+                <label class="so-check so-lb-check"><input id="so-diag-hybrid" type="checkbox"><span>混合模式：精选条目 + 主聊天当前触发的绿灯条目</span></label>
+                <div class="so-lb-row">
+                    <i class="fa-solid fa-book so-lb-icon"></i>
+                    <select id="so-diag-book" title="选择要从哪本世界书里挑条目"></select>
+                    <div class="so-iconbtn" id="so-diag-refresh" title="刷新世界书列表"><i class="fa-solid fa-rotate-right"></i></div>
+                </div>
+                <div id="so-diag-entries" class="so-lb-entries">
+                    <div class="so-lb-entries-head">
+                        <span id="so-diag-entries-summary">条目：全部</span>
+                        <div class="so-iconbtn so-lb-ent-toggle" id="so-diag-entries-toggle" title="展开 / 折叠条目列表"><i class="fa-solid fa-chevron-down"></i></div>
+                    </div>
+                    <div class="so-lb-entries-tools">
+                        <button type="button" class="so-lb-mini" id="so-diag-all">全选</button>
+                        <button type="button" class="so-lb-mini" id="so-diag-none">全不选</button>
+                        <button type="button" class="so-lb-mini" id="so-diag-filtered" disabled title="只选中当前筛选 / 搜索结果里的条目（先在下方筛选框输入关键词）">全选筛选</button>
+                        <button type="button" class="so-lb-mini so-lb-mini-blue" id="so-diag-blue" title="只选常驻（蓝灯）条目，不含已禁用">仅蓝灯</button>
+                        <button type="button" class="so-lb-mini so-lb-mini-green" id="so-diag-green" title="只选关键词触发（绿灯）条目，不含已禁用">仅绿灯</button>
+                        <button type="button" class="so-lb-mini so-lb-mini-off" id="so-diag-disabled" title="只选已禁用条目">仅禁用</button>
+                    </div>
+                    <input type="text" id="so-diag-entries-filter" class="so-lb-entries-filter" placeholder="筛选条目（标题 / 关键词 / uid）…">
+                    <div id="so-diag-entries-list" class="so-lb-entries-list"></div>
+                </div>
+                <div class="so-hint" id="so-diag-hint"></div>
+            </div>
+        </div>
+
         <div id="so-lb-bar">
             <div class="so-lb-row">
                 <i class="fa-solid fa-book so-lb-icon"></i>
@@ -3795,6 +4057,31 @@ function bindControls() {
     win.querySelector('#so-lb-green').addEventListener('click', () => setLbEntriesByType('green'));
     win.querySelector('#so-lb-disabled').addEventListener('click', () => setLbEntriesByType('off'));
     win.querySelector('#so-lb-entries-filter').addEventListener('input', (e) => filterLbEntries(e.target.value));
+    // 诊断「精选世界书条目」绑定（用户功能请求；ENABLE_DIAG_WI_PICKER）。关掉时隐藏整条栏、不挂任何处理器。
+    if (ENABLE_DIAG_WI_PICKER) {
+        win.querySelector('#so-diag-usesel').addEventListener('change', (e) => onDiagUseSelToggle(e.target.checked));
+        win.querySelector('#so-diag-hybrid').addEventListener('change', (e) => onDiagHybridToggle(e.target.checked));
+        win.querySelector('#so-diag-refresh').addEventListener('click', () => populateDiagWiBooks(true));
+        win.querySelector('#so-diag-book').addEventListener('change', (e) => {
+            const meta = getDiagWiMeta();
+            setDiagWiMeta({ use: meta.use, hybrid: meta.hybrid, target: e.target.value, sel: serializeDiagSel(diagEntrySel) });
+            updateDiagHint();
+            populateDiagWiEntries();
+        });
+        win.querySelector('#so-diag-entries-toggle').addEventListener('click', () => {
+            win.querySelector('#so-diag-entries').classList.toggle('open');
+        });
+        win.querySelector('#so-diag-all').addEventListener('click', () => setAllDiagEntries(true));
+        win.querySelector('#so-diag-none').addEventListener('click', () => setAllDiagEntries(false));
+        win.querySelector('#so-diag-filtered').addEventListener('click', () => selectFilteredDiagEntries());
+        win.querySelector('#so-diag-blue').addEventListener('click', () => setDiagEntriesByType('blue'));
+        win.querySelector('#so-diag-green').addEventListener('click', () => setDiagEntriesByType('green'));
+        win.querySelector('#so-diag-disabled').addEventListener('click', () => setDiagEntriesByType('off'));
+        win.querySelector('#so-diag-entries-filter').addEventListener('input', (e) => filterDiagEntries(e.target.value));
+    } else {
+        const bar = win.querySelector('#so-diag-bar');
+        if (bar) bar.style.display = 'none';
+    }
     win.querySelector('#so-debug-btn').addEventListener('click', openDebug);
     win.querySelector('#so-debug-close').addEventListener('click', () => win.querySelector('#so-debug').classList.remove('open'));
     win.querySelector('#so-debug-copy').addEventListener('click', async () => {
@@ -4727,6 +5014,7 @@ function setOracleMode(target) {
     win.querySelector('#so-lorebook-btn').classList.toggle('so-lb-active', lorebookMode);
     win.querySelector('#so-advisor-btn').classList.toggle('so-adv-active', advisorMode);
     inputEl.placeholder = MODE_PLACEHOLDERS[target] || MODE_PLACEHOLDERS.chat;
+    if (ENABLE_DIAG_WI_PICKER) refreshDiagPickerUI();   // 诊断「精选条目」栏随模式刷新（用户功能请求）
 }
 
 // 用户功能请求：诊断按钮三态循环 —— 关 → 诊断 → 诊断·自动(AUTO) → 关。两个纯函数便于单测：
@@ -5483,6 +5771,309 @@ async function populateLorebookEntries() {
     updateLbFilteredBtn();
 }
 
+/* ---- 诊断模式「精选世界书条目」选条目器（用户功能请求；ENABLE_DIAG_WI_PICKER）----
+ * 复用世界书选条目器的视觉（.so-lb-* 类），但语义不同：
+ *   · 选择 diagEntrySel[书名] 始终是【显式 Set<uid>】（无「null = 全选」惯例）——勾了才发，没勾就不发；
+ *   · 每次改动都【按聊天持久化】（persistDiagSel）；
+ *   · 首开按 computeDiagSnapshot（当前激活＝蓝灯 + 命中绿灯）预选一份，之后随你增删。 */
+
+// 首开预选「当前快照」：蓝灯常驻（未禁用）+ 主聊天此刻命中的绿灯，不含禁用。-> { 书名: Set<uid> }。
+// 蓝灯直接从【原始书】取（不依赖扫描预算——某些环境下 dry-run 扫描会因预算返回空），扫描只用来定「哪些绿灯当前命中」。
+async function computeDiagSnapshot() {
+    const mod = await getWiEditApi();
+    if (!mod) return {};
+    let books = [];
+    try { books = await getActiveBookNames(); } catch (e) { books = []; }
+    const active = await getActiveScanUids();   // { 书名: Set<uid> } 当前命中（含蓝 + 绿）
+    const snap = {};
+    for (const name of books) {
+        let data; try { data = await mod.loadWorldInfo(name); } catch (e) { continue; }
+        const all = data && data.entries ? Object.values(data.entries) : [];
+        const activeSet = active[name] || new Set();
+        const set = new Set();
+        for (const e of all) {
+            if (!e || e.disable) continue;                                  // 禁用条目不进快照
+            if (e.constant === true) set.add(Number(e.uid));                // 蓝灯常驻（原始书直取）
+            else if (activeSet.has(Number(e.uid))) set.add(Number(e.uid));  // 当前命中的绿灯
+        }
+        if (set.size) snap[name] = set;
+    }
+    return snap;
+}
+
+// 填充诊断选条目器的书下拉（与 populateLorebookBooks 同构，但目标存元数据而非设置）。
+async function populateDiagWiBooks(announce) {
+    const sel = win.querySelector('#so-diag-book');
+    if (!sel) return;
+    let active = [];
+    let all = [];
+    try { [active, all] = await Promise.all([getActiveBookNames(), getAllBookNames()]); } catch (e) { /* leave empty */ }
+    sel.innerHTML = '';
+    const optAll = document.createElement('option');
+    optAll.value = '';
+    optAll.textContent = active.length ? `① 当前激活的全部世界书（${active.length} 本）` : '① 当前激活的全部世界书（无）';
+    sel.appendChild(optAll);
+    const activeSet = new Set(active);
+    for (const name of all) {
+        const opt = document.createElement('option');
+        opt.value = name;
+        opt.textContent = activeSet.has(name) ? `★ ${name}` : name;
+        sel.appendChild(opt);
+    }
+    const meta = getDiagWiMeta();
+    if (meta.target && all.includes(meta.target)) {
+        sel.value = meta.target;
+    } else {
+        if (meta.target) setDiagWiMeta({ use: meta.use, hybrid: meta.hybrid, target: '', sel: serializeDiagSel(diagEntrySel) });
+        sel.value = '';
+    }
+    updateDiagHint();
+    populateDiagWiEntries();
+    if (announce) addSystemNote('已刷新世界书列表。');
+}
+
+function updateDiagHint() {
+    const hint = win.querySelector('#so-diag-hint');
+    if (!hint) return;
+    const meta = getDiagWiMeta();
+    hint.textContent = meta.target
+        ? `从「${meta.target}」这一本里挑条目喂给诊断。`
+        : '从当前激活的全部世界书里挑条目喂给诊断。勾选即覆盖默认扫描——只发你选中的（无视启用 / 禁用）。';
+}
+
+// 当前显示的全部行里有多少被勾选 -> 更新条目摘要（直接数复选框，与显式 Set 模型一致）。
+function refreshDiagEntriesSummary() {
+    const rows = [...win.querySelectorAll('#so-diag-entries-list .so-lb-ent')];
+    const total = rows.length;
+    let selected = 0;
+    for (const row of rows) {
+        const box = row.querySelector('input[type="checkbox"]');
+        if (box && box.checked) selected++;
+    }
+    const summary = win.querySelector('#so-diag-entries-summary');
+    if (!summary) return;
+    summary.textContent = (total && selected >= total) ? `条目：全部（${total}）` : `条目：已选 ${selected} / ${total}`;
+}
+
+// 勾 / 取消单条：显式 Set，缺省从空集合起（绝不「从全选物化」——精选模型默认不选）。
+function toggleDiagEntry(book, uid, checked) {
+    let sel = diagEntrySel[book];
+    if (!(sel instanceof Set)) sel = new Set();
+    if (checked) sel.add(Number(uid)); else sel.delete(Number(uid));
+    diagEntrySel[book] = sel;
+    refreshDiagEntriesSummary();
+    persistDiagSel();
+}
+
+// 全选 / 全不选（仅作用于当前显示的书）。on -> 该书所有显示行的 uid；off -> 空集合。
+function setAllDiagEntries(on) {
+    const perBook = new Map();
+    for (const row of win.querySelectorAll('#so-diag-entries-list .so-lb-ent')) {
+        const book = row.dataset.book || '';
+        if (!perBook.has(book)) perBook.set(book, new Set());
+        const box = row.querySelector('input[type="checkbox"]');
+        if (box) box.checked = on;
+        if (on && box) perBook.get(book).add(Number(box.dataset.uid));
+    }
+    for (const [book, set] of perBook) diagEntrySel[book] = set;
+    refreshDiagEntriesSummary();
+    persistDiagSel();
+}
+
+// 按灯型选：'blue'（常驻）/ 'green'（关键词）/ 'off'（已禁用），跨当前显示的每本书。
+function setDiagEntriesByType(type) {
+    const rows = [...win.querySelectorAll('#so-diag-entries-list .so-lb-ent')];
+    if (!rows.length) return;
+    const perBook = new Map();
+    for (const row of rows) {
+        const book = row.dataset.book || '';
+        if (!perBook.has(book)) perBook.set(book, new Set());
+        const box = row.querySelector('input[type="checkbox"]');
+        const match = row.dataset.type === type;
+        if (box) box.checked = match;
+        if (match && box) perBook.get(book).add(Number(box.dataset.uid));
+    }
+    for (const [book, set] of perBook) diagEntrySel[book] = set;
+    refreshDiagEntriesSummary();
+    persistDiagSel();
+}
+
+// 文本筛选条目（标题 / 关键词 / uid）——纯 DOM 显隐，与世界书器同款；分组头随其行显隐。
+function filterDiagEntries(q) {
+    const needle = (q || '').trim().toLowerCase();
+    const list = win.querySelector('#so-diag-entries-list');
+    if (!list) return;
+    for (const row of list.querySelectorAll('.so-lb-ent')) {
+        row.style.display = (!needle || (row.dataset.hay || '').includes(needle)) ? '' : 'none';
+    }
+    for (const head of list.querySelectorAll('.so-lb-book-head, .so-lb-ent-empty-sub')) {
+        if (!needle) { head.style.display = ''; continue; }
+        const book = head.dataset.book || '';
+        const headMatches = (head.dataset.hay || '').includes(needle);
+        const anyRowVisible = [...list.querySelectorAll('.so-lb-ent')]
+            .some((r) => (r.dataset.book || '') === book && r.style.display !== 'none');
+        head.style.display = (headMatches || anyRowVisible) ? '' : 'none';
+    }
+    updateDiagFilteredBtn();
+}
+
+// 「全选筛选」：把选择设为当前筛选后仍可见的那些（每本书各自计算）。
+function selectFilteredDiagEntries() {
+    const perBook = new Map();
+    for (const row of win.querySelectorAll('#so-diag-entries-list .so-lb-ent')) {
+        const book = row.dataset.book || '';
+        if (!perBook.has(book)) perBook.set(book, new Set());
+        const box = row.querySelector('input[type="checkbox"]');
+        const visible = row.style.display !== 'none';
+        if (box) box.checked = visible;
+        if (visible && box) perBook.get(book).add(Number(box.dataset.uid));
+    }
+    for (const [book, set] of perBook) diagEntrySel[book] = set;
+    refreshDiagEntriesSummary();
+    persistDiagSel();
+}
+
+function updateDiagFilteredBtn() {
+    const btn = win.querySelector('#so-diag-filtered');
+    if (!btn) return;
+    const f = win.querySelector('#so-diag-entries-filter');
+    btn.disabled = !(f && f.value && f.value.trim());
+}
+
+// 渲染条目清单：勾选态来自 diagEntrySel（显式 Set；未选即未勾）。单本目标 -> 仅该书；否则按激活书分组。
+async function populateDiagWiEntries() {
+    const box = win.querySelector('#so-diag-entries');
+    const list = win.querySelector('#so-diag-entries-list');
+    if (!box || !list) return;
+    const target = getDiagWiMeta().target;
+    let books;
+    if (target) books = [target];
+    else { try { books = await getActiveBookNames(); } catch (e) { books = []; } }
+    if (!books.length) { box.classList.remove('shown'); return; }
+    box.classList.add('shown');
+    const grouped = !target;
+
+    list.innerHTML = '<div class="so-lb-ent-empty">读取条目中…</div>';
+    const mod = await getWiEditApi();
+    const loaded = [];
+    for (const name of books) {
+        let entries = [];
+        try {
+            const data = mod ? await mod.loadWorldInfo(name) : null;
+            if (data && data.entries) {
+                entries = Object.values(data.entries)
+                    .sort((a, b) => (Number(a.displayIndex ?? a.uid) - Number(b.displayIndex ?? b.uid)));
+            }
+        } catch (e) { /* leave empty */ }
+        // 清理失效 uid（条目可能已变）。
+        if (diagEntrySel[name] instanceof Set) {
+            const valid = new Set(entries.map((e) => Number(e.uid)));
+            diagEntrySel[name] = new Set([...diagEntrySel[name]].filter((u) => valid.has(Number(u))));
+        }
+        loaded.push({ name, entries });
+    }
+
+    const totalEntries = loaded.reduce((n, b) => n + b.entries.length, 0);
+    list.innerHTML = '';
+    if (!totalEntries) {
+        list.innerHTML = `<div class="so-lb-ent-empty">（${grouped ? '当前激活的世界书暂无条目' : '此世界书暂无条目'}。）</div>`;
+        refreshDiagEntriesSummary();
+        return;
+    }
+
+    for (const { name, entries } of loaded) {
+        if (grouped) {
+            const head = document.createElement('div');
+            head.className = 'so-lb-book-head';
+            head.dataset.book = name;
+            head.dataset.hay = name.toLowerCase();
+            head.innerHTML = '<i class="fa-solid fa-book"></i><span class="so-lb-book-name"></span>' +
+                `<span class="so-lb-book-count">${entries.length}</span>`;
+            head.querySelector('.so-lb-book-name').textContent = name;
+            list.appendChild(head);
+            if (!entries.length) {
+                const empty = document.createElement('div');
+                empty.className = 'so-lb-ent-empty so-lb-ent-empty-sub';
+                empty.dataset.book = name;
+                empty.dataset.hay = name.toLowerCase();
+                empty.textContent = '（此书暂无条目）';
+                list.appendChild(empty);
+                continue;
+            }
+        }
+        const set = diagEntrySel[name];   // Set（精选模型：未选即未勾，无 null=全选惯例）
+        for (const e of entries) {
+            const checked = (set instanceof Set) && set.has(Number(e.uid));
+            const title = (e.comment && e.comment.trim()) ? e.comment.trim() : '（无标题）';
+            const keys = Array.isArray(e.key) ? e.key.filter(Boolean).join(', ') : '';
+            const row = document.createElement('label');
+            row.className = 'so-lb-ent';
+            row.dataset.book = name;
+            row.dataset.hay = `${grouped ? name + ' ' : ''}${e.uid} ${title} ${keys}`.toLowerCase();
+            row.dataset.type = e.disable ? 'off' : (e.constant ? 'blue' : 'green');
+            row.innerHTML = `<input type="checkbox" data-uid="${e.uid}"${checked ? ' checked' : ''}>` +
+                `<span class="so-lb-ent-type so-lb-type-${e.disable ? 'off' : (e.constant ? 'blue' : 'green')}"></span>` +
+                `<span class="so-lb-ent-uid">#${e.uid}</span><span class="so-lb-ent-title"></span>`;
+            row.querySelector('.so-lb-ent-title').textContent = title;
+            row.querySelector('input').addEventListener('change', (ev) => toggleDiagEntry(name, Number(e.uid), ev.target.checked));
+            list.appendChild(row);
+        }
+    }
+    const f = win.querySelector('#so-diag-entries-filter');
+    if (f && f.value) filterDiagEntries(f.value);
+    refreshDiagEntriesSummary();
+    updateDiagFilteredBtn();
+}
+
+// L2 混合开关 + 选条目区只在 L1 开启后显示。
+function reflectDiagPickerVisible(on) {
+    const bar = win && win.querySelector('#so-diag-bar');
+    if (bar) bar.classList.toggle('so-diag-usesel-on', !!on);
+}
+
+// L1（用精选条目）切换：首开且无既有选择 -> 预选当前快照；否则载入既有。落元数据、刷新可见性、填充。
+async function onDiagUseSelToggle(on) {
+    const meta = getDiagWiMeta();
+    if (on && !Object.keys(meta.sel || {}).length) {
+        try { diagEntrySel = await computeDiagSnapshot(); } catch (e) { diagEntrySel = {}; }
+    } else {
+        diagEntrySel = deserializeDiagSel(meta.sel);
+    }
+    setDiagWiMeta({ use: on, hybrid: meta.hybrid, target: meta.target, sel: serializeDiagSel(diagEntrySel) });
+    reflectDiagPickerVisible(on);
+    if (on) await populateDiagWiBooks();
+    addSystemNote(on
+        ? '已开启「诊断精选世界书条目」。已按当前激活情况预选了一份——可在下方增删（含已禁用条目）；选择只影响喂给诊断的内容，且按【本聊天】记忆。'
+        : '已关闭精选，诊断恢复默认世界书扫描（你的选择仍按本聊天保留，下次打开即恢复）。');
+}
+
+// L2（混合模式）切换：只改 hybrid 标志（影响喂料，不改选条目视图）。
+function onDiagHybridToggle(on) {
+    const meta = getDiagWiMeta();
+    setDiagWiMeta({ use: meta.use, hybrid: on, target: meta.target, sel: serializeDiagSel(diagEntrySel) });
+    addSystemNote(on
+        ? '已开启混合模式：除了你精选的条目，诊断还会带上主聊天此刻触发的绿灯条目。'
+        : '已关闭混合模式：只喂你精选的条目。');
+}
+
+// 把本聊天保存的诊断选择载入内存 + 刷新选条目器 UI（在 onChatChanged 调用，随聊天切换）。
+function loadDiagSelForChat() {
+    diagEntrySel = deserializeDiagSel(getDiagWiMeta().sel);
+    refreshDiagPickerUI();
+}
+
+// 让选条目器 UI（两个开关 + 可见性 + 列表）与本聊天元数据对齐。进入诊断模式 / 切聊天时调用。
+function refreshDiagPickerUI() {
+    if (!win || !ENABLE_DIAG_WI_PICKER) return;
+    const meta = getDiagWiMeta();
+    const useBox = win.querySelector('#so-diag-usesel');
+    const hybBox = win.querySelector('#so-diag-hybrid');
+    if (useBox) useBox.checked = meta.use;
+    if (hybBox) hybBox.checked = meta.hybrid;
+    reflectDiagPickerVisible(meta.use);
+    if (meta.use && diagnoseMode) populateDiagWiBooks();
+}
+
 function formatPrompt(msgs) {
     return msgs.map((m) => {
         const role = (m.role || '?').toUpperCase();
@@ -6104,17 +6695,22 @@ async function generateReply() {
     if (s.applyRegex) await loadRegexEngine(); // ensure engine is ready before building context
 
     if (diagnoseMode) {
-        // Force a WI scan so the card's blue rule entries are always present
-        // (keep 'all' if the user chose it). Also pull live state + the raw
-        // latest <UpdateVariable> block (un-stripped from the stored message).
-        worldInfoBlock = await buildWorldInfo(s.worldInfoMode === 'all' ? 'all' : 'st');
-        // buildWorldInfo strips [mvu_update] mechanism rules by design (chat/
-        // advisor don't want them), and MVU itself may hide them from the scan
-        // (extra-model-parsing mode). Diagnose is the one mode that NEEDS them,
-        // so recover them from the raw books and append.
-        const mvuRules = await collectMvuUpdateRules(worldInfoBlock);
-        if (mvuRules.length) {
-            worldInfoBlock = [worldInfoBlock, ...mvuRules].filter(Boolean).join('\n\n');
+        if (diagPickerActive()) {
+            // 精选模式（用户功能请求）：只喂【本聊天挑选】的世界书条目（无视启用 / 禁用；L2 混合再并入主聊天
+            // 此刻命中的绿灯）。所见即所得——不自动补 [mvu_update] 规则；若一条规则都没选，给个温和提醒。
+            const picked = await buildDiagSelectedWi();
+            worldInfoBlock = picked.block;
+            if (!diagSelHasRules(picked.selectedEntries)) {
+                addSystemNote('⚠ 当前精选里没有选中任何变量规则（[mvu_update]）条目，诊断可能不准确——可在上方选条目栏勾选规则条目（含已禁用的）。');
+            }
+        } else {
+            // 原行为：强制一次世界书扫描（保留 'all' 选择），再从原始书补回 [mvu_update] 规则——buildWorldInfo
+            // 按设计会剥掉它们（聊天 / 参谋不想要），且 MVU 额外模型解析模式还会把它们从扫描里藏掉，而诊断正需要它们。
+            worldInfoBlock = await buildWorldInfo(s.worldInfoMode === 'all' ? 'all' : 'st');
+            const mvuRules = await collectMvuUpdateRules(worldInfoBlock);
+            if (mvuRules.length) {
+                worldInfoBlock = [worldInfoBlock, ...mvuRules].filter(Boolean).join('\n\n');
+            }
         }
         const stat = await getMvuStatData();
         diagStatData = stat ? JSON.stringify(stat, null, 2) : '';
