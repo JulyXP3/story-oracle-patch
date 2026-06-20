@@ -3809,6 +3809,9 @@ function buildWindow() {
         </div>
 
         <div id="so-diag-bar">
+            <details class="so-mode-collapse" id="so-diag-collapse" open>
+                <summary class="so-mode-collapse-sum"><i class="fa-solid fa-stethoscope"></i><span>诊断设置</span></summary>
+                <div class="so-mode-collapse-body">
             <label class="so-check so-lb-check"><input id="so-diag-usesel" type="checkbox"><span>诊断使用精选世界书条目（关闭则用默认扫描）</span></label>
             <div class="so-hint">开启后可【按本聊天】挑选要喂给诊断的世界书条目，无视其在 ST 里的启用 / 禁用状态——解决「禁用了变量规则条目后诊断就看不到」与「全量太吵」的两难。首次开启会按当前激活情况预选一份，之后随你增删、按聊天记忆。</div>
             <div id="so-diag-picker">
@@ -3836,9 +3839,14 @@ function buildWindow() {
                 </div>
                 <div class="so-hint" id="so-diag-hint"></div>
             </div>
+                </div>
+            </details>
         </div>
 
         <div id="so-lb-bar">
+            <details class="so-mode-collapse" id="so-lb-collapse" open>
+                <summary class="so-mode-collapse-sum"><i class="fa-solid fa-book"></i><span>世界书设置</span></summary>
+                <div class="so-mode-collapse-body">
             <div class="so-lb-row">
                 <i class="fa-solid fa-book so-lb-icon"></i>
                 <select id="so-lb-book" title="选择要聊 / 编辑的世界书"></select>
@@ -3864,6 +3872,8 @@ function buildWindow() {
                 <div id="so-lb-entries-list" class="so-lb-entries-list"></div>
             </div>
             <div class="so-hint" id="so-lb-hint"></div>
+                </div>
+            </details>
         </div>
 
         <div id="so-adv-bar">
@@ -4134,6 +4144,10 @@ function bindControls() {
     win.querySelector('#so-lb-entries-toggle').addEventListener('click', () => {
         win.querySelector('#so-lb-entries').classList.toggle('open');
     });
+    // 手机上把模式工具栏（诊断 / 世界书的配置栏）默认折叠，先把聊天区露出来；桌面保持展开。用户随后可自行开合。
+    if (window.matchMedia && window.matchMedia('(max-width: 600px)').matches) {
+        win.querySelectorAll('#so-lb-collapse, #so-diag-collapse').forEach((d) => { d.open = false; });
+    }
     win.querySelector('#so-lb-all').addEventListener('click', () => setAllLbEntries(true));
     win.querySelector('#so-lb-none').addEventListener('click', () => setAllLbEntries(false));
     win.querySelector('#so-lb-filtered').addEventListener('click', () => selectFilteredLbEntries());

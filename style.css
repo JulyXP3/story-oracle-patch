@@ -584,6 +584,9 @@
     #so-send { width: 44px; height: 44px; }
     .so-msg-btn { padding: 9px 11px; }
     .so-actions { gap: 4px; }
+    /* 诊断 / 世界书配置栏：手机上最多占半屏（内部滚动），条目列表也压低，避免盖住聊天区 */
+    #so-lb-bar, #so-diag-bar { max-height: 50vh; overflow-y: auto; }
+    .so-lb-entries-list { max-height: 120px; }
 }
 
 /* ---------- diagnose mode ---------- */
@@ -679,6 +682,36 @@
 /* L2 混合开关 + 选条目区只在 L1（用精选条目）开启后才出现 */
 #so-diag-picker { display: none; flex-direction: column; gap: 6px; }
 #so-diag-bar.so-diag-usesel-on #so-diag-picker { display: flex; }
+
+/* 模式工具栏折叠：诊断 / 世界书的配置栏整条可折叠成一行标题，给聊天区让出竖向空间（手机上尤其重要）。
+   复用设置分组的 <summary> ▸ 机制，染上当前模式的主题色（世界书=羊皮纸暖色；诊断里 --so-lb-accent 被改写为蓝）。 */
+.so-mode-collapse { width: 100%; }
+.so-mode-collapse > summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 3px 2px;
+    font-size: 0.82em;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--so-lb-accent);
+    opacity: 0.92;
+    transition: opacity 0.15s;
+}
+.so-mode-collapse > summary::-webkit-details-marker { display: none; }
+.so-mode-collapse > summary::before {
+    content: '▸';   /* 展开时转 90° 朝下 */
+    display: inline-block;
+    font-size: 0.9em;
+    opacity: 0.7;
+    transition: transform 0.15s;
+}
+.so-mode-collapse[open] > summary::before { transform: rotate(90deg); }
+.so-mode-collapse > summary:hover { opacity: 1; }
+.so-mode-collapse > summary:focus-visible { outline: 2px solid var(--so-lb-accent); outline-offset: 2px; }
+.so-mode-collapse-body { display: flex; flex-direction: column; gap: 6px; padding-top: 8px; }
 
 .so-lb-row {
     display: flex;
