@@ -3691,6 +3691,12 @@ function buildWindow() {
     win.id = 'so-window';
     win.style.display = 'none';
     applyInitialGeometry(s);
+    // 视口变化时把窗口重新夹回可见区——旋屏 / 手机软键盘弹收 / 浏览器地址栏伸缩都会改变【可见】视口，
+    // 否则 position:fixed 的窗口标题栏（唯一带 ✕ 关闭 + 拖动把手的地方）可能被挤出屏外、再也够不到
+    //（手机「常驻、无法关闭」bug）。ensureWindowInView 只贴合显示、不 save，键盘收起后会自己长回原尺寸。
+    window.addEventListener('resize', scheduleEnsureInView);
+    window.addEventListener('orientationchange', scheduleEnsureInView);
+    if (window.visualViewport) window.visualViewport.addEventListener('resize', scheduleEnsureInView);
 
     win.innerHTML = `
         <div id="so-header">
@@ -5113,7 +5119,10 @@ function toggleWindow(show) {
         win.classList.remove('so-opening');
         void win.offsetWidth; // force reflow so the animation restarts
         win.classList.add('so-opening');
-        inputEl.focus();
+        ensureWindowInView();   // 每次开窗都把窗口夹回可见区——卡在屏外的窗口下次打开即自愈
+        // 手机上别自动聚焦输入框：会弹出软键盘、压缩可见视口，把 position:fixed 的标题栏（含 ✕）挤出屏外。
+        // 桌面保留自动聚焦；手机用户自己点输入框时，上面注册的 visualViewport 监听会再夹一次、护住标题栏。
+        if (window.innerWidth >= 600) inputEl.focus();
         checkPlanReminder(); // natural opportunity for the 20-message staleness ping
     }
     placePlanBar(); // strip moves home (window) or out (float) with visibility
@@ -7942,6 +7951,55 @@ function applyInitialGeometry(s) {
         win.style.top = '56px';
         win.style.right = 'auto';
     } // else: desktop keeps the CSS default (top:70px right:20px)
+}
+
+// 把一个窗口盒子夹进【可见】视口（visualViewport），保证整窗——尤其顶部带 ✕ 关闭 / 拖动把手的
+// 标题栏——始终在屏内。纯函数、可单测：box={left,top,width,height}（CSS 像素），view={w,h,offX,offY}
+//（offX/offY 是手机键盘弹出时 visualViewport 的偏移，桌面为 0）。先按可见区给宽高封顶，再夹 left/top。
+function clampWindowBox(box, view) {
+    const margin = 8, minW = 300, minH = 320;
+    const offX = view.offX || 0, offY = view.offY || 0;
+    const width = Math.max(minW, Math.min(box.width, view.w - margin * 2));
+    const height = Math.max(minH, Math.min(box.height, view.h - margin * 2));
+    const left = Math.max(offX + margin, Math.min(box.left, offX + view.w - width - margin));
+    const top = Math.max(offY + margin, Math.min(box.top, offY + view.h - height - margin));
+    return { left, top, width, height };
+}
+
+// 把当前窗口重新夹回可见视口（开窗 / 旋屏 / 键盘弹收时调用）。宽高基准取「用户存的几何」或与
+// applyInitialGeometry 一致的默认（380×540），这样键盘压扁后收起还能长回原尺寸。【不 save()】——
+// 这只是临时贴合显示，不覆盖用户拖 / 拽存下来的几何。
+function ensureWindowInView() {
+    if (!win || win.style.display === 'none') return;
+    const s = getSettings();
+    const vv = window.visualViewport;
+    const view = {
+        w: (vv && vv.width) || window.innerWidth,
+        h: (vv && vv.height) || window.innerHeight,
+        offX: (vv && vv.offsetLeft) || 0,
+        offY: (vv && vv.offsetTop) || 0,
+    };
+    const r = win.getBoundingClientRect();
+    const box = {
+        left: (s.winLeft != null) ? s.winLeft : r.left,
+        top: (s.winTop != null) ? s.winTop : r.top,
+        width: s.winWidth || 380,
+        height: s.winHeight || 540,
+    };
+    const c = clampWindowBox(box, view);
+    win.style.width = `${c.width}px`;
+    win.style.height = `${c.height}px`;
+    win.style.left = `${c.left}px`;
+    win.style.top = `${c.top}px`;
+    win.style.right = 'auto';
+}
+
+// 视口变化会连发很多次（键盘动画 / 旋屏过渡）——合并到下一帧只夹一次，避免抖动。
+let _ensureInViewPending = false;
+function scheduleEnsureInView() {
+    if (_ensureInViewPending) return;
+    _ensureInViewPending = true;
+    requestAnimationFrame(() => { _ensureInViewPending = false; ensureWindowInView(); });
 }
 
 // Drag the window by its header. Pointer events cover mouse + touch + pen in one
