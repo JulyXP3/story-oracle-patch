@@ -34,9 +34,17 @@
             const btn = win.querySelector(selector);
             if (btn) {
                 btn.addEventListener('click', () => {
+                    // 关闭设置面板
                     if (settingsPanel.classList.contains('open')) {
                         settingsPanel.classList.remove('open');
                         win.classList.remove('so-settings-open');
+                    }
+                    // 关闭大纲模式
+                    win.classList.remove('so-outline-on');
+                    // 移除大纲按钮的激活状态
+                    const outlineBtn = win.querySelector('#so-outline-btn');
+                    if (outlineBtn) {
+                        outlineBtn.classList.remove('so-outline-active');
                     }
                 });
             }

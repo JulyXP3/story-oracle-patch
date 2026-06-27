@@ -54,6 +54,11 @@
         'patches/advisor-collapse.js',
         'patches/tools-expand.js',
         'patches/settings-panel.js',
+        'patches/outline-mode.js',
+        'patches/outline-templates.js',
+        'patches/outline-inject.js',
+        'patches/outline-request.js',
+        'patches/message-actions.js',
     ];
 
     // 加载脚本
@@ -94,6 +99,27 @@
 
             if (patch.improveSettingsPanel) {
                 patch.improveSettingsPanel();
+            }
+
+            if (patch.createOutlineModeUI) {
+                patch.createOutlineModeUI();
+            }
+
+            if (patch.initTemplateManager) {
+                patch.initTemplateManager();
+            }
+
+            if (patch.addMessageActions) {
+                patch.addMessageActions();
+
+                // 监听消息变化，自动为新消息添加操作按钮
+                const messagesEl = document.querySelector('#so-messages');
+                if (messagesEl) {
+                    const observer = new MutationObserver(() => {
+                        patch.addMessageActions();
+                    });
+                    observer.observe(messagesEl, { childList: true, subtree: true });
+                }
             }
 
             // 监听窗口创建（备用）
