@@ -59,6 +59,7 @@
         'patches/outline-inject.js',
         'patches/outline-request.js',
         'patches/message-actions.js',
+        'patches/actions-bottom.js',
     ];
 
     // 加载脚本
