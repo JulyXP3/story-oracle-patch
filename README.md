@@ -1,3 +1,11 @@
+```go
+已获得作者授权进行二改
+禁止商业化
+
+原作者: namelessone88
+原仓库地址: https://github.com/namelessone88/story-oracle
+```
+
 # 故事神谕（Story Oracle）—— SillyTavern 扩展
 
 一个可拖动的侧边面板，连接到你自定义的 **OpenAI 兼容** 端点，让你针对*正在进行中*的
@@ -23,6 +31,7 @@
 点击窗口标题栏里的 ⚙ 齿轮。
 
 **直连模式（Direct，默认）** —— 完全自包含：
+
 - **端点 URL**：你的基础 URL（例如 `https://your-proxy.com/v1`）。如果你只填了主机名或
   `/v1` 形式的基础地址，会自动补上 `/chat/completions`。如果想绕过自动补全，直接粘贴
   完整的 `.../chat/completions` URL。
