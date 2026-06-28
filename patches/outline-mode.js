@@ -2,50 +2,50 @@
  * 大纲模式 - 基础UI模块
  */
 (function () {
-    'use strict';
+  "use strict";
 
-    const OUTLINE_MODE_ID = 'outline';
+  const OUTLINE_MODE_ID = "outline";
 
-    function createOutlineModeUI() {
-        const win = document.getElementById('so-window');
-        if (!win) return false;
+  function createOutlineModeUI() {
+    const win = document.getElementById("so-window");
+    if (!win) return false;
 
-        const headerBtns = win.querySelector('#so-header-btns');
-        if (!headerBtns) return false;
+    const headerBtns = win.querySelector("#so-header-btns");
+    if (!headerBtns) return false;
 
-        // 在参谋按钮之前插入大纲模式按钮
-        const advisorBtn = headerBtns.querySelector('#so-advisor-btn');
-        if (!advisorBtn) return false;
+    // 在参谋按钮之前插入大纲模式按钮
+    const advisorBtn = headerBtns.querySelector("#so-advisor-btn");
+    if (!advisorBtn) return false;
 
-        // 创建大纲模式按钮
-        const outlineBtn = document.createElement('div');
-        outlineBtn.className = 'so-iconbtn';
-        outlineBtn.id = 'so-outline-btn';
-        outlineBtn.title = '大纲模式 —— 管理和注入剧情大纲';
-        outlineBtn.innerHTML = '<i class="fa-solid fa-list-check"></i>';
+    // 创建大纲模式按钮
+    const outlineBtn = document.createElement("div");
+    outlineBtn.className = "so-iconbtn";
+    outlineBtn.id = "so-outline-btn";
+    outlineBtn.title = "大纲模式 —— 管理和注入剧情大纲";
+    outlineBtn.innerHTML = '<i class="fa-solid fa-list-check"></i>';
 
-        // 插入到参谋按钮之前
-        advisorBtn.parentNode.insertBefore(outlineBtn, advisorBtn);
+    // 插入到参谋按钮之前
+    advisorBtn.parentNode.insertBefore(outlineBtn, advisorBtn);
 
-        // 创建大纲模式面板
-        createOutlinePanel();
+    // 创建大纲模式面板
+    createOutlinePanel();
 
-        // 绑定点击事件
-        outlineBtn.addEventListener('click', toggleOutlineMode);
+    // 绑定点击事件
+    outlineBtn.addEventListener("click", toggleOutlineMode);
 
-        console.log('[Story Oracle Patch] 大纲模式按钮已创建');
-        return true;
-    }
+    console.log("[Story Oracle Patch] 大纲模式按钮已创建");
+    return true;
+  }
 
-    function createOutlinePanel() {
-        const win = document.getElementById('so-window');
-        const chatArea = win.querySelector('#so-messages');
-        if (!chatArea) return;
+  function createOutlinePanel() {
+    const win = document.getElementById("so-window");
+    const chatArea = win.querySelector("#so-messages");
+    if (!chatArea) return;
 
-        // 创建大纲模式面板容器（与其他模式栏同级）
-        const outlineBar = document.createElement('div');
-        outlineBar.id = 'so-outline-bar';
-        outlineBar.innerHTML = `
+    // 创建大纲模式面板容器（与其他模式栏同级）
+    const outlineBar = document.createElement("div");
+    outlineBar.id = "so-outline-bar";
+    outlineBar.innerHTML = `
             <details class="so-mode-collapse" id="so-outline-settings-collapse" open>
                 <summary class="so-mode-collapse-sum">
                     <i class="fa-solid fa-sliders"></i>
@@ -71,20 +71,20 @@
             </details>
         `;
 
-        // 找到 so-adv-bar 的位置，插入在其后
-        const advBar = win.querySelector('#so-adv-bar');
-        if (advBar) {
-            advBar.parentNode.insertBefore(outlineBar, advBar.nextSibling);
-        }
-
-        // 添加绿色主题样式
-        addOutlineStyles();
+    // 找到 so-adv-bar 的位置，插入在其后
+    const advBar = win.querySelector("#so-adv-bar");
+    if (advBar) {
+      advBar.parentNode.insertBefore(outlineBar, advBar.nextSibling);
     }
 
-    function addOutlineStyles() {
-        const style = document.createElement('style');
-        style.id = 'so-outline-theme';
-        style.textContent = `
+    // 添加绿色主题样式
+    addOutlineStyles();
+  }
+
+  function addOutlineStyles() {
+    const style = document.createElement("style");
+    style.id = "so-outline-theme";
+    style.textContent = `
             /* 大纲模式强调色 */
             :root {
                 --so-outline-accent: #4ade80;
@@ -381,36 +381,43 @@
                 pointer-events: none;
             }
         `;
-        document.head.appendChild(style);
+    document.head.appendChild(style);
+  }
+
+  function toggleOutlineMode() {
+    const win = document.getElementById("so-window");
+    if (!win) return;
+
+    const outlineBtn = win.querySelector("#so-outline-btn");
+    const isActive = win.classList.contains("so-outline-on");
+    const inputBox = win.querySelector("#so-input");
+
+    if (isActive) {
+      // 关闭大纲模式
+      win.classList.remove("so-outline-on");
+      outlineBtn?.classList.remove("so-outline-active");
+      if (inputBox)
+        inputBox.placeholder =
+          "就当前剧情问点什么吧...（Enter发送，Shift+Enter换行）";
+    } else {
+      // 激活大纲模式，关闭其他模式
+      win.classList.remove("so-diag-on", "so-lb-on", "so-adv-on", "so-fix-on");
+      win.classList.add("so-outline-on");
+
+      // 取消其他按钮的激活状态
+      win.querySelector("#so-diagnose-btn")?.classList.remove("so-diag-active");
+      win.querySelector("#so-lorebook-btn")?.classList.remove("so-lb-active");
+      win.querySelector("#so-advisor-btn")?.classList.remove("so-adv-active");
+      win.querySelector("#so-fix-btn")?.classList.remove("so-fix-active");
+
+      // 激活大纲按钮
+      outlineBtn?.classList.add("so-outline-active");
+      if (inputBox)
+        inputBox.placeholder =
+          "你需要什么样的大纲? 别忘了选择大纲模板捏~ （Enter发送，Shift+Enter换行）";
     }
+  }
 
-    function toggleOutlineMode() {
-        const win = document.getElementById('so-window');
-        if (!win) return;
-
-        const outlineBtn = win.querySelector('#so-outline-btn');
-        const isActive = win.classList.contains('so-outline-on');
-
-        if (isActive) {
-            // 关闭大纲模式
-            win.classList.remove('so-outline-on');
-            outlineBtn?.classList.remove('so-outline-active');
-        } else {
-            // 激活大纲模式，关闭其他模式
-            win.classList.remove('so-diag-on', 'so-lb-on', 'so-adv-on', 'so-fix-on');
-            win.classList.add('so-outline-on');
-
-            // 取消其他按钮的激活状态
-            win.querySelector('#so-diagnose-btn')?.classList.remove('so-diag-active');
-            win.querySelector('#so-lorebook-btn')?.classList.remove('so-lb-active');
-            win.querySelector('#so-advisor-btn')?.classList.remove('so-adv-active');
-            win.querySelector('#so-fix-btn')?.classList.remove('so-fix-active');
-
-            // 激活大纲按钮
-            outlineBtn?.classList.add('so-outline-active');
-        }
-    }
-
-    window.StoryOraclePatch = window.StoryOraclePatch || {};
-    window.StoryOraclePatch.createOutlineModeUI = createOutlineModeUI;
+  window.StoryOraclePatch = window.StoryOraclePatch || {};
+  window.StoryOraclePatch.createOutlineModeUI = createOutlineModeUI;
 })();
