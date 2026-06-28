@@ -19,7 +19,6 @@
 - 严格按照用户选择的大纲模板格式输出。
 - 如果用户没有提供足够信息，可以基于已有上下文合理推断，但要标注推断部分。`;
 
-    let cachedPresetSystemPrompt = null;
     const originalFetch = window.fetch;
 
     function getTemplateContent(templateId) {
@@ -41,26 +40,55 @@
         }
     }
 
-    function preloadCompletionPreset() {
+    function getStoryOracleSettings() {
+        try {
+            const pwin = window.parent || window;
+            const ctx = pwin.SillyTavern?.getContext?.();
+            if (!ctx) return null;
+
+            const MODULE = 'storyOracle';
+            return ctx.extensionSettings?.[MODULE] || null;
+        } catch (e) {
+            console.error('[Story Oracle Patch] 获取设置失败:', e);
+            return null;
+        }
+    }
+
+    function getPresetSystemPrompt() {
         try {
             const pwin = window.parent || window;
             const api = pwin.TavernHelper;
+            if (!api) return null;
 
-            if (!api) return;
+            const settings = getStoryOracleSettings();
+            if (!settings) return null;
 
-            const presetName = api.getLoadedPresetName?.();
-            if (!presetName) return;
+            const presetName = settings.sysPromptPresetName;
+            if (!presetName) return null;
 
             const preset = api.getPreset(presetName);
             if (preset?.prompts) {
-                const systemPrompt = preset.prompts.find(p => p.identifier === 'system_prompt');
+                // 尝试多种方式查找系统提示词
+                let systemPrompt = preset.prompts.find(p => p.identifier === 'system_prompt');
+
+                if (!systemPrompt) {
+                    systemPrompt = preset.prompts.find(p => p.name === 'Main Prompt' && p.role === 'system');
+                }
+
+                if (!systemPrompt) {
+                    systemPrompt = preset.prompts.find(p => p.role === 'system');
+                }
+
                 if (systemPrompt?.content) {
-                    cachedPresetSystemPrompt = systemPrompt.content;
-                    console.log('[Story Oracle Patch] 补全预设提示词已缓存');
+                    console.log(`[Story Oracle Patch] 使用补全预设: ${presetName}`);
+                    return systemPrompt.content;
                 }
             }
+
+            return null;
         } catch (e) {
-            console.error('[Story Oracle Patch] 预加载补全预设失败:', e);
+            console.error('[Story Oracle Patch] 获取补全预设失败:', e);
+            return null;
         }
     }
 
@@ -74,8 +102,11 @@
         const usePreset = usePresetCheckbox?.checked;
 
         let basePrompt = OUTLINE_DEFAULT_SYSTEM_PROMPT;
-        if (usePreset && cachedPresetSystemPrompt) {
-            basePrompt = cachedPresetSystemPrompt;
+        if (usePreset) {
+            const presetPrompt = getPresetSystemPrompt();
+            if (presetPrompt) {
+                basePrompt = presetPrompt;
+            }
         }
 
         const templateSelect = document.getElementById('so-outline-template-select');
@@ -114,10 +145,6 @@
 
     function init() {
         console.log('[Story Oracle Patch] 大纲模式初始化中...');
-
-        setTimeout(() => {
-            preloadCompletionPreset();
-        }, 1000);
 
         interceptFetch();
         console.log('[Story Oracle Patch] 大纲模式初始化成功');
