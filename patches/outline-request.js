@@ -123,33 +123,36 @@
 
     function interceptFetch() {
         window.fetch = async function(url, options) {
-            if (isOutlineMode() && options?.method === 'POST' && options?.body) {
+            if (options?.method === 'POST' && options?.body) {
                 try {
                     const body = JSON.parse(options.body);
                     if (body.messages && Array.isArray(body.messages)) {
-                        const systemMsg = body.messages.find(m => m.role === 'system');
-                        if (systemMsg) {
-                            const outlinePrompt = getOutlineSystemPrompt();
-                            systemMsg.content = outlinePrompt;
-                            options.body = JSON.stringify(body);
-
-                            // 如果开启了开发者选项，输出完整请求内容
-                            const showPrompt = window.StoryOraclePatch?.isShowPromptEnabled?.();
-                            if (showPrompt) {
-                                console.log('='.repeat(80));
-                                console.log('[Story Oracle Patch] 完整请求内容:');
-                                console.log('='.repeat(80));
-                                body.messages.forEach((msg, idx) => {
-                                    console.log(`\n[消息 ${idx + 1}] 角色: ${msg.role}`);
-                                    console.log('-'.repeat(40));
-                                    console.log(msg.content);
-                                });
-                                console.log('\n' + '='.repeat(80));
+                        // 大纲模式下替换系统提示词
+                        if (isOutlineMode()) {
+                            const systemMsg = body.messages.find(m => m.role === 'system');
+                            if (systemMsg) {
+                                const outlinePrompt = getOutlineSystemPrompt();
+                                systemMsg.content = outlinePrompt;
+                                options.body = JSON.stringify(body);
                             }
+                        }
+
+                        // 如果开启了开发者选项，输出最终请求内容（所有修改完成后）
+                        const showPrompt = window.StoryOraclePatch?.isShowPromptEnabled?.();
+                        if (showPrompt) {
+                            console.log('='.repeat(80));
+                            console.log('[Story Oracle] 最终请求内容:');
+                            console.log('='.repeat(80));
+                            body.messages.forEach((msg, idx) => {
+                                console.log(`\n[消息 ${idx + 1}] 角色: ${msg.role}`);
+                                console.log('-'.repeat(40));
+                                console.log(msg.content);
+                            });
+                            console.log('\n' + '='.repeat(80));
                         }
                     }
                 } catch (e) {
-                    console.error('[Story Oracle Patch] 拦截请求失败:', e);
+                    console.error('[Story Oracle Patch] 拊请求失败:', e);
                 }
             }
             return originalFetch.call(this, url, options);
