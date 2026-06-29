@@ -93,9 +93,20 @@
       select.appendChild(option);
     });
 
-    // 恢复之前的选择
-    if (templates.find((t) => t.id === currentValue)) {
+    // 恢复之前的选择（优先使用保存的选择）
+    const savedSelection = localStorage.getItem("so_outline_template_selected");
+    if (savedSelection && templates.find((t) => t.id === savedSelection)) {
+      select.value = savedSelection;
+    } else if (templates.find((t) => t.id === currentValue)) {
       select.value = currentValue;
+    }
+
+    // 监听选择变化并保存
+    if (!select.dataset.listenerAdded) {
+      select.addEventListener("change", () => {
+        localStorage.setItem("so_outline_template_selected", select.value);
+      });
+      select.dataset.listenerAdded = "true";
     }
   }
 
