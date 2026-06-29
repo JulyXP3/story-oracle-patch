@@ -128,6 +128,28 @@
                 }
             }
 
+            // 初始化完成后触发一次模式切换，确保状态正确
+            initModeState();
+        }, 100);
+    }
+
+    // 触发一次模式切换以初始化状态
+    function initModeState() {
+        setTimeout(() => {
+            const win = document.getElementById('so-window');
+            const lbBtn = win?.querySelector('#so-lorebook-btn');
+            if (lbBtn) {
+                lbBtn.click();
+                setTimeout(() => lbBtn.click(), 50);
+            }
+        }, 200);
+    }
+
+    // 应用所有补丁（续）
+    function applyPatchesContinued() {
+        setTimeout(() => {
+            const patch = window[NAMESPACE];
+
             // 监听窗口创建（备用）
             const observer = new MutationObserver(() => {
                 if (document.getElementById('so-adv-bar')) {
