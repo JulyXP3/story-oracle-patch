@@ -65,7 +65,8 @@
     const contentEl = latestMsg.querySelector(".so-content");
     if (!contentEl) return;
 
-    const originalText = contentEl.textContent;
+    // **优先读取原始内容（Markdown 渲染前保存的）**
+    const originalText = contentEl.dataset.originalContent || contentEl.textContent;
     if (!originalText.trim()) {
       showToast("消息内容为空", "warning");
       return;
@@ -75,7 +76,21 @@
     if (typeof window.StoryOraclePatch?.supplementTags === "function") {
       const fixedText = window.StoryOraclePatch.supplementTags(originalText);
       if (fixedText && fixedText !== originalText) {
+        // 更新原始内容
+        contentEl.dataset.originalContent = fixedText;
+
+        // 重置 markdown 处理标记
+        contentEl.dataset.markdownProcessed = "false";
+
+        // 更新显示内容
         contentEl.textContent = fixedText;
+
+        // 如果启用了 markdown 渲染，触发重新渲染
+        if (window.StoryOraclePatch?.renderMarkdown && contentEl.classList.contains("markdown-content")) {
+          const html = window.StoryOraclePatch.renderMarkdown(fixedText);
+          contentEl.innerHTML = html;
+          contentEl.dataset.markdownProcessed = "true";
+        }
       }
     } else {
       showToast("标签补充功能不可用", "error");

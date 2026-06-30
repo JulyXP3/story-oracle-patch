@@ -62,6 +62,7 @@
         'patches/message-actions.js',
         'patches/actions-bottom.js',
         'patches/smart-scroll.js',
+        'patches/markdown-render.js',
     ];
 
     // 加载脚本

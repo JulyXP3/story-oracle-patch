@@ -4,7 +4,7 @@
 (function () {
   "use strict";
 
-  // 为消息添加额外的操作按钮（隐藏楼层、注入大纲、编辑）
+  // 为消息添加额外的操作按钮（注入大纲、编辑）
   function addMessageActions() {
     const win = document.getElementById("so-window");
     if (!win) return;
@@ -14,24 +14,8 @@
       const actionsBar = msg.querySelector(".so-actions");
       if (!actionsBar) return;
 
-      // 检查是否已添加
-      if (actionsBar.querySelector(".so-hide-btn")) return;
-
-      // 在现有按钮之前插入"隐藏楼层"按钮
-      const hideBtn = document.createElement("button");
-      hideBtn.className = "so-msg-btn so-hide-btn";
-      hideBtn.type = "button";
-      hideBtn.title = "隐藏楼层";
-      hideBtn.innerHTML = '<i class="fa-solid fa-eye-slash"></i>';
-
-      // 插入到第一个位置
-      actionsBar.insertBefore(hideBtn, actionsBar.firstChild);
-
-      // 绑定事件
-      hideBtn.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleMessageHide(msg, hideBtn);
-      });
+      // 检查是否已添加（通过检查注入按钮）
+      if (actionsBar.querySelector(".so-inject-btn")) return;
 
       // 如果是AI消息，添加编辑按钮（在重新生成按钮后）
       if (msg.classList.contains("so-assistant")) {
@@ -69,80 +53,15 @@
         });
       }
     });
-
-    // 恢复隐藏状态
-    restoreHiddenStates();
-  }
-
-  // 切换消息隐藏状态
-  function toggleMessageHide(msg, btn) {
-    const isHidden = msg.classList.toggle("so-msg-hidden");
-
-    // 更新按钮图标
-    const icon = btn.querySelector("i");
-    icon.className = isHidden ? "fa-solid fa-eye" : "fa-solid fa-eye-slash";
-    btn.title = isHidden ? "显示楼层" : "隐藏楼层";
-
-    // 保存状态
-    const cid = msg.dataset.cid;
-    if (cid) {
-      saveHiddenState(cid, isHidden);
-    }
-
-    showToast(isHidden ? "已隐藏" : "已显示");
-  }
-
-  // 保存隐藏状态
-  function saveHiddenState(cid, isHidden) {
-    const key = "so_hidden_messages";
-    let hiddenMessages = {};
-
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) hiddenMessages = JSON.parse(stored);
-    } catch (e) {}
-
-    if (isHidden) {
-      hiddenMessages[cid] = true;
-    } else {
-      delete hiddenMessages[cid];
-    }
-
-    try {
-      localStorage.setItem(key, JSON.stringify(hiddenMessages));
-    } catch (e) {}
-  }
-
-  // 恢复隐藏状态
-  function restoreHiddenStates() {
-    const key = "so_hidden_messages";
-    let hiddenMessages = {};
-
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) hiddenMessages = JSON.parse(stored);
-    } catch (e) {
-      return;
-    }
-
-    const messages = document.querySelectorAll(".so-msg[data-cid]");
-    messages.forEach((msg) => {
-      const cid = msg.dataset.cid;
-      if (hiddenMessages[cid]) {
-        msg.classList.add("so-msg-hidden");
-        const hideBtn = msg.querySelector(".so-hide-btn");
-        if (hideBtn) {
-          const icon = hideBtn.querySelector("i");
-          icon.className = "fa-solid fa-eye";
-          hideBtn.title = "显示楼层";
-        }
-      }
-    });
   }
 
   // 从消息中提取并注入剧情大纲
   function injectOutlineFromMessage(msg) {
-    const content = msg.querySelector(".so-content")?.textContent || "";
+    const contentEl = msg.querySelector(".so-content");
+    if (!contentEl) return;
+
+    // **优先读取原始内容（Markdown 渲染前保存的）**
+    const content = contentEl.dataset.originalContent || contentEl.textContent || "";
 
     if (!content.trim()) {
       showToast("消息内容为空");
@@ -167,7 +86,13 @@
     const contentEl = msg.querySelector(".so-content");
     if (!contentEl) return;
 
-    const currentText = contentEl.textContent;
+    // **优先读取原始内容（Markdown 渲染前保存的）**
+    const currentText = contentEl.dataset.originalContent || contentEl.textContent;
+
+    // 计算主面板高度的80%
+    const messagesPanel = document.querySelector("#so-messages");
+    const panelHeight = messagesPanel ? messagesPanel.clientHeight : 600;
+    const editHeight = Math.max(300, Math.floor(panelHeight * 0.8));
 
     // 创建编辑区域
     const textarea = document.createElement("textarea");
@@ -175,8 +100,10 @@
     textarea.value = currentText;
     textarea.style.cssText = `
             width: 100%;
-            min-height: 100px;
-            padding: 8px;
+            height: ${editHeight}px;
+            min-height: 300px;
+            max-height: 90vh;
+            padding: 12px;
             background: rgba(0, 0, 0, 0.3);
             border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
             border-radius: 8px;
@@ -185,6 +112,7 @@
             font-size: inherit;
             line-height: 1.5;
             resize: vertical;
+            box-sizing: border-box;
         `;
 
     // 替换内容区域
@@ -219,7 +147,24 @@
 
     // 保存按钮
     saveBtn.addEventListener("click", () => {
-      contentEl.textContent = textarea.value;
+      const newText = textarea.value;
+
+      // 更新原始内容
+      contentEl.dataset.originalContent = newText;
+
+      // 重置 markdown 处理标记，以便重新渲染
+      contentEl.dataset.markdownProcessed = "false";
+
+      // 更新显示内容（如果有 markdown 渲染，会被自动重新渲染）
+      contentEl.textContent = newText;
+
+      // 如果有 markdown 渲染功能，触发重新渲染
+      if (window.StoryOraclePatch?.renderMarkdown && contentEl.classList.contains("markdown-content")) {
+        const html = window.StoryOraclePatch.renderMarkdown(newText);
+        contentEl.innerHTML = html;
+        contentEl.dataset.markdownProcessed = "true";
+      }
+
       contentEl.style.display = "";
       textarea.remove();
       btnBar.remove();

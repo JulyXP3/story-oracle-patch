@@ -104,7 +104,7 @@
             content = stripHeadTailTags(text);
         }
 
-        const result = `<${tagName}>\n${content}\n</${tagName}>`;
+        const result = `<${tagName}>\n\n${content}\n\n</${tagName}>`;
         showToast(`已补充 <${tagName}> 标签`, 'success');
         return result;
     }
