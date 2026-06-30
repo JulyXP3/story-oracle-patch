@@ -77,6 +77,11 @@
     return templates.find((t) => t.id === id);
   }
 
+  // 保存模板选择的处理函数（避免重复创建）
+  const handleTemplateChange = (e) => {
+    localStorage.setItem("so_outline_template_selected", e.target.value);
+  };
+
   // 刷新模板选择器
   function refreshTemplateSelector() {
     const select = document.getElementById("so-outline-template-select");
@@ -101,11 +106,10 @@
       select.value = currentValue;
     }
 
-    // 监听选择变化并保存
+    // 监听选择变化并保存（先移除旧的，再添加新的）
     if (!select.dataset.listenerAdded) {
-      select.addEventListener("change", () => {
-        localStorage.setItem("so_outline_template_selected", select.value);
-      });
+      select.removeEventListener("change", handleTemplateChange);
+      select.addEventListener("change", handleTemplateChange);
       select.dataset.listenerAdded = "true";
     }
   }

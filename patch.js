@@ -118,11 +118,15 @@
             if (patch.addMessageActions) {
                 patch.addMessageActions();
 
-                // 监听消息变化，自动为新消息添加操作按钮
+                // 监听消息变化，自动为新消息添加操作按钮（带防抖）
                 const messagesEl = document.querySelector('#so-messages');
                 if (messagesEl) {
+                    let debounceTimer = null;
                     const observer = new MutationObserver(() => {
-                        patch.addMessageActions();
+                        if (debounceTimer) clearTimeout(debounceTimer);
+                        debounceTimer = setTimeout(() => {
+                            patch.addMessageActions();
+                        }, 150); // 150ms 防抖延迟
                     });
                     observer.observe(messagesEl, { childList: true, subtree: true });
                 }

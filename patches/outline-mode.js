@@ -82,23 +82,37 @@
     }
   }
 
-  function showToast(message, type = "success") {
-    if (window.toastr) {
-      window.toastr[type](message);
-      return;
-    }
+  // Toast 容器管理（限制最多显示数量）
+  const toastManager = {
+    maxToasts: 3,
+    activeToasts: [],
 
-    const colors = {
-      success: "rgba(74, 222, 128, 0.9)",
-      warning: "rgba(251, 191, 36, 0.9)",
-      error: "rgba(239, 68, 68, 0.9)",
-    };
+    addToast(message, type = "success") {
+      // 如果使用 toastr，直接调用
+      if (window.toastr) {
+        window.toastr[type](message);
+        return;
+      }
 
-    const toast = document.createElement("div");
-    toast.textContent = message;
-    toast.style.cssText = `
+      // 如果已达到最大数量，移除最旧的
+      if (this.activeToasts.length >= this.maxToasts) {
+        const oldestToast = this.activeToasts.shift();
+        if (oldestToast && oldestToast.parentNode) {
+          oldestToast.remove();
+        }
+      }
+
+      const colors = {
+        success: "rgba(74, 222, 128, 0.9)",
+        warning: "rgba(251, 191, 36, 0.9)",
+        error: "rgba(239, 68, 68, 0.9)",
+      };
+
+      const toast = document.createElement("div");
+      toast.textContent = message;
+      toast.style.cssText = `
             position: fixed;
-            bottom: 20px;
+            bottom: ${20 + this.activeToasts.length * 60}px;
             right: 20px;
             padding: 12px 20px;
             background: ${colors[type]};
@@ -108,14 +122,44 @@
             font-size: 14px;
             max-width: 300px;
             white-space: pre-line;
+            transition: all 0.3s ease;
         `;
-    document.body.appendChild(toast);
 
-    setTimeout(() => {
-      toast.style.transition = "opacity 0.3s";
-      toast.style.opacity = "0";
-      setTimeout(() => toast.remove(), 300);
-    }, 3000);
+      document.body.appendChild(toast);
+      this.activeToasts.push(toast);
+
+      // 自动移除
+      setTimeout(() => {
+        toast.style.opacity = "0";
+        setTimeout(() => {
+          toast.remove();
+          const index = this.activeToasts.indexOf(toast);
+          if (index > -1) {
+            this.activeToasts.splice(index, 1);
+          }
+          // 重新调整剩余 toast 的位置
+          this.repositionToasts();
+        }, 300);
+      }, 3000);
+    },
+
+    repositionToasts() {
+      // 过滤掉已经从 DOM 中移除的 toast
+      this.activeToasts = this.activeToasts.filter(toast => {
+        return toast && toast.parentNode;
+      });
+
+      // 重新定位剩余的 toast
+      this.activeToasts.forEach((toast, index) => {
+        if (toast && toast.style) {
+          toast.style.bottom = `${20 + index * 60}px`;
+        }
+      });
+    }
+  };
+
+  function showToast(message, type = "success") {
+    toastManager.addToast(message, type);
   }
 
   function createOutlinePanel() {
