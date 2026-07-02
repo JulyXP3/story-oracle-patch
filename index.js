@@ -669,6 +669,9 @@ const defaults = {
     apiKey: '',
     model: '',
     stream: true,
+    // 直连「经酒馆后端转发」（1.17.23）：直连撞第三方端点 CORS（failed to fetch）时勾选——复用同一端点+密钥，改由
+    // 酒馆服务器代发（custom 源 + 显式 Authorization 头），无浏览器跨域、无需连接配置文件。默认关 = 字节不变。
+    directViaBackend: false,
     // profile mode
     profileId: '',
     // shared generation params
@@ -745,6 +748,11 @@ const defaults = {
     autoDiagnoseEnabled: false,
     autoDiagnoseWarned: false,
     autoDiagnoseDelayMs: 1200,
+    // ✨ 自动校正 ↔ MVU「额外模型更新」抢写协调（opt-in，默认关）。开启后校正【照常立刻并行跑】——只在【落新 swipe
+    // 之前】等 MVU 的额外模型解析写完（awaitMvuIdle 轮询 isDuringExtraAnalysis），再把它注入的机制块接到校正稿末尾
+    // （mergeMvuTail），两者不抢写同一条消息、且几乎不增加等待。只有【用 MVU 额外模型更新】的人需要开；不用的保持
+    // 关 = 现行行为字节不变（无 MVU / MVU 不忙时 awaitMvuIdle + mergeMvuTail 都是即时空操作）。
+    fixWaitForMvu: false,
     // ✨ 校正：首次切到「自动校正」时弹一次性提醒（讲清标签块 <sceneinfo>/<details> 的留存要靠排除区·保留）。
     // 与 autoDiagnoseWarned 同款一次性警告：勾「不再提示」后置真，从此不再弹。
     autoFixWarned: false,
@@ -2205,7 +2213,7 @@ function resolveFixModeCfg(e, mode) {
             // ✨ 校正提示词选择器（轻校 / 精校 + 侧重）：归一 raw fixA_promptVersion/Flavor 成校验值。缺省 / null /
             // 未知 → 默认（light / deepseek），迁移安全（老聊天无值 = 轻校 = 零行为变化）。resolveFixAutoPrompt 据此选提示。
             promptVersion: (c.fixA_promptVersion === 'thorough' ? 'thorough' : 'light'),
-            promptFlavor: (c.fixA_promptFlavor === 'opus' ? 'opus' : 'deepseek'),
+            promptFlavor: (['opus', 'gemini'].includes(c.fixA_promptFlavor) ? c.fixA_promptFlavor : 'deepseek'),
         };
     }
     // 手动：depth 显式 0 = 不带前文；其余非正数 / 缺省 = -1（全部）。
@@ -2222,13 +2230,18 @@ function resolveFixModeCfg(e, mode) {
 
 // ✨ 自动校正提示词选择器（纯映射，设计 §4）：把归一后的 {promptVersion, promptFlavor} 映射到具体系统提示常量。
 //   version !== 'thorough' → 轻校 = FIX_SYSTEM_PROMPT_TIGHTEN（今天的现行提示，默认，byte 不变）
-//   thorough + flavor==='opus' → FIX_PROMPT_JINGXIAO_OPUS（对「数据包腔」强攻，适合 Claude / Opus）
-//   thorough + 其它 / 缺省     → FIX_PROMPT_JINGXIAO_DEEPSEEK（克制版，适合 DeepSeek / 国产模型）
+//   thorough + flavor==='opus'   → FIX_PROMPT_JINGXIAO_OPUS（对「数据包腔」强攻，适合 Claude / Opus）
+//   thorough + flavor==='gemini' → FIX_PROMPT_JINGXIAO_DEEPSEEK【暂用】——Gemini 经诊断（2026-07-01）属 DeepSeek 类：
+//       它自己就清数据包，而 Opus 强攻 clause 反而把它的正式对白过校正（死谏 −25）。将来若做专属
+//       FIX_PROMPT_JINGXIAO_GEMINI，只改这一行的返回值即可（UI / 设置的 gemini 侧重已就位）。
+//   thorough + 其它 / 缺省       → FIX_PROMPT_JINGXIAO_DEEPSEEK（克制版，适合 DeepSeek / 国产模型）
 // 只有精确的 'thorough' 才是精校；null / '' / 未知一律回落轻校（迁移安全）。cfg 缺失也回落轻校，不抛。
 function resolveFixAutoPrompt(cfg) {
     const c = cfg || {};
     if (c.promptVersion !== 'thorough') return FIX_SYSTEM_PROMPT_TIGHTEN;
-    return c.promptFlavor === 'opus' ? FIX_PROMPT_JINGXIAO_OPUS : FIX_PROMPT_JINGXIAO_DEEPSEEK;
+    if (c.promptFlavor === 'opus') return FIX_PROMPT_JINGXIAO_OPUS;
+    if (c.promptFlavor === 'gemini') return FIX_PROMPT_JINGXIAO_DEEPSEEK;   // ← seam：将来换成 FIX_PROMPT_JINGXIAO_GEMINI
+    return FIX_PROMPT_JINGXIAO_DEEPSEEK;
 }
 
 // 读本聊天保存的校正覆盖（始终回对象，可能为空 {}）。喂给 getEffectiveFixCfg 当 md。
@@ -4571,6 +4584,19 @@ function composeFixedReply(fixedProse, originalReply, keepBlocks) {
     return out;
 }
 
+// ✨ overlap 版（opt-in fixWaitForMvu）：MVU 额外模型更新在校正【捕获之后】才往回复末尾注入 <UpdateVariable> + 状态栏
+// 占位符；校正是并行跑的，composeFixedReply 只接回了【捕获时】的机制块（那时 MVU 还没写）。这里把【当前】回复里的
+// 机制块补接到校正稿末尾（已在则不重复），让新 swipe 带上 MVU 刚写好的变量块。MVU 注在整条消息末尾，故末尾追加即对齐。
+// 纯函数、幂等、nullish 安全、可单测。
+function mergeMvuTail(fixedText, currentReply) {
+    let out = String(fixedText == null ? '' : fixedText);
+    const cur = String(currentReply == null ? '' : currentReply);
+    const block = extractUpdateBlock(cur);
+    if (block && !out.includes(block)) out = out.trimEnd() + '\n\n' + block;
+    if (cur.includes(STATUS_PLACEHOLDER) && !out.includes(STATUS_PLACEHOLDER)) out = out.trimEnd() + '\n\n' + STATUS_PLACEHOLDER;
+    return out;
+}
+
 // Apply a corrective <UpdateVariable> block through MVU's own pipeline.
 // Returns a snapshot of the pre-apply data (for undo), or null on failure.
 async function applyFix(patchBlock, statusEl) {
@@ -4640,6 +4666,27 @@ function postReplyPlan(flags, s) {
 }
 
 // message_received 监听的落点：在共享锁下，对一条 AI 回复按 postReplyPlan 顺序跑校正 / 诊断。
+// ✨ 自动校正 ↔ MVU「额外模型更新」抢写协调（opt-in fixWaitForMvu）。MVU 的额外模型解析在回复后【自己异步】发一次
+// 模型调用再写 <UpdateVariable> + 状态；auto-校正也在回复后异步发调用 + 写新 swipe——两者抢写同一条消息会串味 /
+// 覆盖 / 出重复块。MVU 暴露 isDuringExtraAnalysis()（+ mag_variable_update_started/ended 事件），据此在动手前等它写完。
+// 纯防御：无 MVU / 旧版无此 API → 一律「不忙」，等待即刻结束，对不用额外模型更新的人零影响。可单测。
+function mvuIsBusy(mvu) {
+    return !!(mvu && typeof mvu.isDuringExtraAnalysis === 'function' && mvu.isDuringExtraAnalysis());
+}
+// 条件式等待 MVU 空闲：轮询 isDuringExtraAnalysis() 直到为假 / 到 cap（兜底绝不挂死，到点照常继续）/ 被取消。
+// 回已等毫秒（供日志 / 测试）。这是「按条件等」而非盲计时——MVU 写完的那一刻就往下走，无论它的额外模型调用多慢。
+async function awaitMvuIdle(mvu, opts = {}) {
+    const capMs = (opts.capMs != null) ? opts.capMs : 120000;   // 额外模型是一次完整 LLM 往返；给足，但到点仍继续
+    const pollMs = (opts.pollMs != null) ? opts.pollMs : 250;
+    const isCancelled = (typeof opts.isCancelled === 'function') ? opts.isCancelled : () => false;
+    let waited = 0;
+    while (mvuIsBusy(mvu) && waited < capMs && !isCancelled()) {
+        await new Promise((r) => setTimeout(r, pollMs));
+        waited += pollMs;
+    }
+    return waited;
+}
+
 async function maybePostReply(messageId) {
     const ctx = getCtx(); if (!ctx) return;
     const s = getSettings();
@@ -5159,7 +5206,7 @@ function injectWandButton() {
     rc.id = 'so-wand-recenter';
     rc.className = 'list-group-item flex-container flexGap5 interactable';
     rc.tabIndex = 0;
-    rc.innerHTML = `<i class="fa-solid fa-arrows-to-dot"></i><span>神谕窗口归位（居中）</span>`;
+    rc.innerHTML = `<i class="fa-solid fa-arrows-to-dot"></i><span>窗口归位</span>`;
     rc.addEventListener('click', () => recenterWindow());
     menu.appendChild(rc);
 }
@@ -5283,7 +5330,11 @@ function buildWindow() {
                             <select id="so-model-list" style="display:none"></select>
                             <div class="so-hint" id="so-model-hint"></div>
                         </label>
-                        <div class="so-hint">如果请求因 CORS / 网络错误失败，请切换到“连接配置文件”模式（通过 ST 服务器转发）。</div>
+                        <label class="so-row" title="打开后，直连请求改由酒馆服务器代发——避免浏览器跨域(CORS)，用的还是上面这个端点和密钥（无需连接配置文件）。">
+                            <span>经酒馆后端转发（避免跨域 CORS）</span>
+                            <input id="so-direct-backend" type="checkbox">
+                        </label>
+                        <div class="so-hint">端点直连若报 <b>CORS / failed to fetch</b>，勾选此项即可（由酒馆服务器代发，仍用上面的端点 + 密钥）。“获取模型”按钮仍走浏览器直连，可能失败——手动填模型名即可。</div>
                     </div>
 
                     <div id="so-profile-fields">
@@ -5440,7 +5491,9 @@ function buildWindow() {
                         <button type="button" id="so-fix-run" class="so-fix-run-btn"><i class="fa-solid fa-wand-magic-sparkles"></i> 按目标校正最新回复</button>
                         <label class="so-check so-lb-check"><input id="so-fix-auto" type="checkbox"><span>自动校正每条新回复（实验）</span></label>
                         <label class="so-check so-lb-check"><input id="so-fixa-preset" type="checkbox"><span>经自定义补全预设发送（破限 / 越狱用）</span></label>
-                        <label class="so-check so-lb-check"><span>只校正此标签内的正文</span>&nbsp;<input id="so-fix-scope" type="text" placeholder="content" style="width:110px;"></label>
+                        <label class="so-check so-lb-check"><input id="so-fix-wait-mvu" type="checkbox"><span>⏳ 与 MVU「额外模型更新」并用（避免抢写冲突）</span></label>
+                        <div class="so-hint">仅当你开了 MVU 的「额外模型更新」（用另一个模型异步解析变量）时才勾。勾上后：校正<strong>照常立刻开跑</strong>（与 MVU 并行、几乎不多等），只在<strong>生成新回复稿之前</strong>等 MVU 把变量写完再合并进来——两者不再抢写同一条消息、数据不错乱。没开额外模型更新就<strong>保持不勾</strong>。</div>
+                        <label class="so-check so-lb-check"><span>只校正此标签内的正文</span>&nbsp;<input id="so-fix-scope" type="text" style="width:110px;"></label>
                         <div class="so-hint">填卡片包裹【正文】的标签名（默认 <code>content</code>）：只校正 &lt;content&gt;…&lt;/content&gt; 之间的正文，正文【外】的所有块（状态栏 / 选项 / 世界书 / htmlcontent 地图 / 变量更新 / 占位符…）原样保留、<strong>原位不动</strong>。回复里没有该标签则自动校正整条（简单卡不受影响）。<strong>留空</strong> = 校正整条回复。卡片若用别的标签包正文，就改成那个标签名（如 &lt;正文&gt; 就填 <code>正文</code>）。</div>
                         <div id="so-fix-verdict" class="so-fix-verdict" hidden></div>
                         <button type="button" id="so-fix-scan" class="so-fix-run-btn"><i class="fa-solid fa-magnifying-glass"></i> 扫描本卡正文标签（自动填好）</button>
@@ -5458,8 +5511,8 @@ function buildWindow() {
                         <textarea id="so-fix-guard" rows="2" placeholder="剧情护栏 / 自定义（可空）：例如「保持慢热，不要时间跳跃」"></textarea>
                         <label class="so-check so-lb-check"><input id="so-fix-tighten" type="checkbox"><span>✂️ 收紧（默认开）：校正后再精修一遍（删冗词废话 / 过度描写，读感更紧）。</span></label>
                         <label class="so-check so-lb-check"><span>校正提示词</span>&nbsp;<select id="so-fix-prompt-version" title="轻校＝现行提示词（较克制）；精校＝更彻底的三道工序校正"><option value="light">轻校（现行 · 默认）</option><option value="thorough">精校（三道工序）</option></select></label>
-                        <label class="so-check so-lb-check" id="so-fix-prompt-flavor-row"><span>精校侧重</span>&nbsp;<select id="so-fix-prompt-flavor" title="按你用的模型选侧重：DeepSeek / 国产模型选 DeepSeek 类；Claude / Opus 选 Opus 类"><option value="deepseek">DeepSeek 类（默认）</option><option value="opus">Opus 类</option></select></label>
-                        <div class="so-hint">轻校＝现行提示词（较克制）。精校＝更彻底的三道工序校正（<strong>已含收紧</strong>）；按你用的模型选侧重：DeepSeek / 国产模型选「DeepSeek 类」，Claude / Opus 选「Opus 类」。默认轻校，不选精校则行为不变。</div>
+                        <label class="so-check so-lb-check" id="so-fix-prompt-flavor-row"><span>精校侧重</span>&nbsp;<select id="so-fix-prompt-flavor" title="按你用的模型选侧重：DeepSeek / 国产模型选 DeepSeek 类；Claude / Opus 选 Opus 类；Gemini 选 Gemini 类"><option value="deepseek">DeepSeek 类（默认）</option><option value="opus">Opus 类</option><option value="gemini">Gemini 类</option></select></label>
+                        <div class="so-hint">轻校＝现行提示词（较克制）。精校＝更彻底的三道工序校正（<strong>已含收紧</strong>）；按你用的模型选侧重：DeepSeek / 国产模型选「DeepSeek 类」，Claude / Opus 选「Opus 类」，Gemini 选「Gemini 类」。默认轻校，不选精校则行为不变。</div>
                         <details class="so-mode-collapse" id="so-fix-ctx-adv">
                             <summary class="so-fix-targets-head" style="cursor:pointer;">上下文（默认关，点开）</summary>
                             <div class="so-hint">⚠ 默认关闭以省时间。仅当你的「知识边界 / 剧情护栏」需要参考前文 / 角色卡 / 世界书才能判断时，才勾选。</div>
@@ -5965,6 +6018,7 @@ function bindControls() {
     bind('#so-apikey', 'apiKey', (v) => v.trim());
     bind('#so-model', 'model', (v) => v.trim());
     bind('#so-stream', 'stream');
+    bind('#so-direct-backend', 'directViaBackend'); // 1.17.23：经酒馆后端转发（避免直连 CORS）
     // 用户功能请求：聊天栏快捷按钮开关——改设置后立刻放 / 撤按钮（不只是存）。
     win.querySelector('#so-chatbar-toggle').addEventListener('change', (e) => {
         getSettings().showChatBarButton = e.target.checked;
@@ -6009,6 +6063,9 @@ function bindControls() {
     if (fixmPresetCb) fixmPresetCb.addEventListener('change', () => { getSettings().fixM_usePreset = fixmPresetCb.checked; save(); applyFixPresetLock(); });
     const fixaPresetCb = win.querySelector('#so-fixa-preset');
     if (fixaPresetCb) fixaPresetCb.addEventListener('change', () => { getSettings().fixA_usePreset = fixaPresetCb.checked; save(); applyFixPresetLock(); });
+    // ✨ MVU「额外模型更新」抢写协调（opt-in，全局设置——用户环境级，不入 per-chat FIX_CFG_KEYS）。
+    const fixWaitMvuCb = win.querySelector('#so-fix-wait-mvu');
+    if (fixWaitMvuCb) fixWaitMvuCb.addEventListener('change', () => { getSettings().fixWaitForMvu = fixWaitMvuCb.checked; save(); });
     // 数字框条数 parse：非数字 / 非正数 → -1（全部），正数原样。手动 / 自动各一份独立存储。
     const depthParse = (v) => { const n = parseInt(v, 10); return (Number.isNaN(n) || n <= 0) ? -1 : n; };
     // 手动模式控件（fixM_*）——上下文条数 / 卡 / 世界书 / 概要。
@@ -6036,7 +6093,7 @@ function bindControls() {
         applyFixFlavorView();
     });
     win.querySelector('#so-fix-prompt-flavor')?.addEventListener('change', (e) => {
-        setFixCfg({ fixA_promptFlavor: e.target.value === 'opus' ? 'opus' : 'deepseek' });
+        setFixCfg({ fixA_promptFlavor: ['opus', 'gemini'].includes(e.target.value) ? e.target.value : 'deepseek' });
     });
     bindFix('#so-fix-card', 'fixA_includeCard');
     bindFix('#so-fix-ctx', 'fixA_includeContext');
@@ -6120,7 +6177,11 @@ function bindControls() {
         }
     });
     inputEl.addEventListener('input', autoGrowInput);                                                      // #4 输入框随内容自动增高
-    messagesEl.addEventListener('scroll', () => { if (!soProgScroll) soFollowStream = nearBottom(); });    // #1 用户滚动更新「是否跟随到底部」
+    // #1 跟随意图【只】由真·用户手势（滚轮 / 触摸）更新——程序化滚动（固定顶部 / 跟随到底）不触发 wheel / touchmove，
+    // 故不会被「空占位气泡刚固定到顶时 nearBottom 恰好为真」误翻成跟随（先前用通用 scroll 监听正栽在这）。
+    const soUpdateFollow = () => { try { requestAnimationFrame(() => { soFollowStream = nearBottom(); }); } catch (e) { soFollowStream = nearBottom(); } };
+    messagesEl.addEventListener('wheel', soUpdateFollow, { passive: true });        // 桌面滚轮
+    messagesEl.addEventListener('touchmove', soUpdateFollow, { passive: true });    // 手机触摸滑动
 
     // 用户功能请求：反映持久化的自动诊断状态（重载后若 AUTO 仍开着，按钮显示红色 + AUTO）。
     updateDiagButtonVisual();
@@ -6134,6 +6195,8 @@ function loadSettingsIntoForm() {
     win.querySelector('#so-apikey').value = s.apiKey;
     win.querySelector('#so-model').value = s.model;
     win.querySelector('#so-stream').checked = !!s.stream;
+    win.querySelector('#so-direct-backend').checked = !!s.directViaBackend; // 1.17.23：经酒馆后端转发
+
     win.querySelector('#so-temp').value = s.temperature;
     win.querySelector('#so-maxtok').value = s.maxTokens;
     win.querySelector('#so-depth').value = s.contextDepth;
@@ -8356,7 +8419,7 @@ function seedFixControls() {
     set('#so-fix-guard', 'value', cfg.fixA_guardrails || '');
     set('#so-fix-tighten', 'checked', cfg.fixA_tighten !== false);
     set('#so-fix-prompt-version', 'value', (cfg.fixA_promptVersion === 'thorough') ? 'thorough' : 'light');   // ✨ 校正提示词（轻校 / 精校）
-    set('#so-fix-prompt-flavor', 'value', (cfg.fixA_promptFlavor === 'opus') ? 'opus' : 'deepseek');           // ✨ 精校侧重（DeepSeek / Opus）
+    set('#so-fix-prompt-flavor', 'value', ['opus', 'gemini'].includes(cfg.fixA_promptFlavor) ? cfg.fixA_promptFlavor : 'deepseek');   // ✨ 精校侧重（DeepSeek / Opus / Gemini）
     set('#so-fix-card', 'checked', !!cfg.fixA_includeCard);
     set('#so-fix-ctx', 'checked', !!cfg.fixA_includeContext);
     set('#so-fix-ctx-depth', 'value', cfg.fixA_contextDepth);
@@ -8365,6 +8428,7 @@ function seedFixControls() {
     set('#so-fix-auto', 'checked', !!cfg.autoFixEnabled);
     set('#so-fixm-preset', 'checked', !!getSettings().fixM_usePreset);   // 全局开关（手动）；不在 cfg / FIX_CFG_KEYS 里
     set('#so-fixa-preset', 'checked', !!getSettings().fixA_usePreset);   // 全局开关（自动）
+    set('#so-fix-wait-mvu', 'checked', !!getSettings().fixWaitForMvu);   // ✨ MVU「额外模型更新」抢写协调（全局 opt-in）
     applyFixPresetLock();   // 预设模式下置灰「带角色卡 / 带世界书」（由预设标记提供）
     applyFixModeView();
 }
@@ -9434,7 +9498,7 @@ async function generateReply() {
     } finally {
         setGenerating(false);
         abortCtl = null;
-        scrollToBottom();
+        if (soFollowStream) scrollToBottom();   // #1 定稿后只在用户跟随到底部时才滚；否则保持固定顶部（从头读）
     }
 }
 
@@ -9450,12 +9514,28 @@ async function generateReply() {
 // exists?:boolean）。优先级【自上而下】：缺任一 → gone；chatId 变 → chatSwitched（P-CORRUPT，压过一切）；目标
 // 消失（exists:false / targetIdx 空 / <0）→ gone；swipe 变 → swipeChanged；指纹变 → contentChanged；否则 ok。
 // prose 只随行、【不参与】判定。可单测（fix-target-integrity.test.mjs）。
-function fixTargetStale(captured, current) {
+// ✨ overlap（fixWaitForMvu）：把回复剥成【纯叙述正文】用于陈旧比对——去掉【两种】机制块：<UpdateVariable>（stripMechanismBlocks
+// 管）+ 状态栏占位符 <StatusPlaceHolderImpl/>（stripMechanismBlocks【不】管，得单独去）。MVU 额外模型更新两样都会事后注入，
+// 只有把两样都剥掉，捕获时 vs 写入时的正文才可比——正文一致 = 只 MVU 动过 → 放行。纯函数、nullish 安全、可单测。
+function fixBodyProse(text) {
+    const noPlaceholder = String(text == null ? '' : text).split(STATUS_PLACEHOLDER).join('');
+    return stripMechanismBlocks(noPlaceholder);   // stripMechanismBlocks 内含收敛空行 + trim
+}
+
+function fixTargetStale(captured, current, opts) {
+    const o = opts || {};
     if (!captured || !current) return { stale: true, reason: 'gone' };
     if (current.chatId !== captured.chatId) return { stale: true, reason: 'chatSwitched' };
     if (current.exists === false || current.targetIdx == null || current.targetIdx < 0) return { stale: true, reason: 'gone' };
     if (current.swipeId !== captured.swipeId) return { stale: true, reason: 'swipeChanged' };
-    if (current.fingerprint !== captured.fingerprint) return { stale: true, reason: 'contentChanged' };
+    // ✨ overlap 版（fixWaitForMvu）：MVU 额外模型更新会在回复末尾注入 <UpdateVariable> + 占位符——那是【预期】变化，
+    // 会让整条 m.mes 的指纹变。mvuTolerant 时改比【去机制块的正文 bodyProse】：正文一致 = 只有 MVU 动过 → 放行；
+    // 正文变了（用户编辑 / 换成别的回复）→ 仍判陈旧。换 swipe / 切聊天 / 目标没了 上面已各自拦下，安全网不塌。
+    if (o.mvuTolerant) {
+        if (current.bodyProse !== captured.bodyProse) return { stale: true, reason: 'contentChanged' };
+    } else if (current.fingerprint !== captured.fingerprint) {
+        return { stale: true, reason: 'contentChanged' };
+    }
     return { stale: false, reason: 'ok' };
 }
 
@@ -9517,6 +9597,8 @@ function fixCurrentSnapshot(idx) {
         targetIdx: t.idx,
         swipeId: exists ? ((m && m.swipe_id) | 0) : -1,
         fingerprint: fixFingerprint(m ? m.mes : ''),
+        // ✨ overlap（fixWaitForMvu）：纯叙述正文（去 <UpdateVariable> + 状态栏占位符）——MVU 注入这两样不改它，用户真编辑才改。
+        bodyProse: fixBodyProse(m ? m.mes : ''),
         exists,
         prose: '',
     };
@@ -9677,6 +9759,8 @@ async function captureFixContext(s, { mode = 'manual', targetId } = {}) {
         swipeId: (ctx.chat[latest.idx]?.swipe_id) | 0,
         fingerprint: fixFingerprint(ctx.chat[latest.idx]?.mes),
         prose: fixTargetProse,
+        // ✨ overlap（fixWaitForMvu）：捕获时（MVU 写块【之前】）的纯叙述正文（去 <UpdateVariable> + 状态栏占位符）；写入前与当前比对——只有 MVU 注块 → 一致 → 放行。
+        bodyProse: fixBodyProse(latest.text),
     };
     fixSummaryBlock = norm.includeSummary ? getSummary() : '';   // 📜剧情概要（手动默认带、自动可选）；buildFixEnvelope 包成 <story_summary>
     fixTightenActive = norm.tighten;   // ✨ 收紧：手动恒 false（单稿省时间）；自动按 ✂️收紧 开关（默认开）
@@ -9843,7 +9927,7 @@ async function runFixByTargets() {
         clearTimeout(timer);
         setGenerating(false);
         abortCtl = null;                                             // 交还共享中断器（与 generateReply 一致）
-        scrollToBottom();
+        if (soFollowStream) scrollToBottom();   // #1 定稿后只在用户跟随到底部时才滚
     }
 }
 
@@ -10024,11 +10108,17 @@ async function runAutoFix(ctx, s, targetId) {
     if (fixOutputTruncated(parsed.fixed, finishHint, fixTargetProse).truncated) { addAutoFixNote('truncated'); return; }
 
     // 接回原回复的机制块（<UpdateVariable> + 状态栏占位符）+ 用户「排除·保留」区，再作为【新 swipe】应用。
+    // ✨ overlap（opt-in fixWaitForMvu）：校正的 LLM 已和 MVU 额外模型更新【并行】跑完；写 swipe 前【等 MVU 写完】，
+    // 再把它事后注入的机制块（<UpdateVariable> + 占位符）从【当前】回复接到校正稿末尾（mergeMvuTail）。不开 / 无 MVU /
+    // MVU 不忙 → awaitMvuIdle 即时返回、mergeMvuTail 无操作，行为字节不变。
+    if (s.fixWaitForMvu && !postReplyCancelled) await awaitMvuIdle(await getMvu(), { isCancelled: () => postReplyCancelled });
+    if (postReplyCancelled) return;   // 等 MVU 期间被中断 → 不写
     const innerFixed = composeFixedReply(parsed.fixed, fixOriginalReply, fixExtraKeep);
-    const finalText2 = wrapContentScope(fixScope, innerFixed);   // ✨ 作用域：把校正后的内层回插信封原位（inactive 时为无操作）
-    // P-CORRUPT 权威网：LLM 返回后聊天可能已切走 / 这条回复已换 swipe / 被编辑 / 被删——写入前再核对捕获快照，
-    // 失效则不写、记一条 stale（原因经 problems 槽映射人话）。这是「切聊天发生在 LLM 返回之后」的最后一道闸。
-    const st = fixTargetStale(fixCaptured, fixCurrentSnapshot(fixTargetIdx));
+    let finalText2 = wrapContentScope(fixScope, innerFixed);   // ✨ 作用域：把校正后的内层回插信封原位（inactive 时为无操作）
+    if (s.fixWaitForMvu) finalText2 = mergeMvuTail(finalText2, (ctx.chat || [])[fixTargetIdx]?.mes);   // MVU 事后注的机制块补接末尾
+    // P-CORRUPT 权威网：LLM 返回后聊天可能已切走 / 这条回复已换 swipe / 被编辑 / 被删——写入前再核对捕获快照，失效则不写、记一条
+    // stale。overlap 模式（fixWaitForMvu）用 mvuTolerant：只比去机制块正文，容忍 MVU 刚注入的块，仍拦真编辑 / 换 swipe / 切聊天 / 目标没了。
+    const st = fixTargetStale(fixCaptured, fixCurrentSnapshot(fixTargetIdx), { mvuTolerant: !!s.fixWaitForMvu });
     if (st.stale) { addAutoFixNote('stale', st.reason); return; }
     await applyFixAsSwipe(fixTargetIdx, finalText2);
     // 抓【应用后】落点的 swipe_id（addSwipeToMessage 把新 swipe 设为当前），给记录的「用原文 ↔ 用校正稿」
@@ -10064,6 +10154,84 @@ function directHeaders(apiKey) {
     const h = { 'Content-Type': 'application/json' };
     if (apiKey) h['Authorization'] = `Bearer ${apiKey}`;
     return h;
+}
+
+// PURE：为「经酒馆后端转发的直连」（s.directViaBackend）构造 ChatCompletionService.processRequest 的 requestData。
+// 背景（2026-07-01 用户 xxw / 若葉睦）：直连=浏览器→端点，会撞第三方端点的 CORS（opencode 等 → failed to fetch）；
+// 配置文件模式又因【无自带密钥的配置档回退到激活连接的密钥】而 401（只有神谕选档 == 酒馆当前激活档才不报错）。
+// 这条路复用用户【已在直连里填好的】端点+密钥，但让【酒馆服务器】去发（无浏览器 CORS）：走 ST 的 custom 源，把密钥
+// 作为显式 Authorization 头随 custom_include_headers 送——ST 后端把 custom_include_headers 合并在 secret 派生的
+// 'Authorization: Bearer '+apiKey 之【后】故覆盖生效，且 custom 源豁免「缺密钥」400 守卫
+// （src/endpoints/backends/chat-completions.js:2516 / 2579）。→ 不需要连接配置文件、不需要在 ST 里存 secret、与激活连接无关。
+// 入参 url = 直连规范化后的 .../chat/completions（callDirect/streamDirect 收到的那个）；后端会对 custom_url 再追加
+// /chat/completions，故这里剥掉后缀，保证 custom_url + '/chat/completions' == 原直连 URL（端点逐字一致）。
+// custom_include_headers 必须是【字符串】（后端 mergeObjectWithYaml → yaml.parse；JSON 是合法 YAML 流式映射）。
+function buildBackendForwardPayload(url, apiKey, body, stream) {
+    const customUrl = String(url || '').replace(/\/chat\/completions\/?$/, '');
+    const headers = apiKey ? { Authorization: 'Bearer ' + apiKey } : {};
+    const { model, messages, max_tokens, stream: _drop, ...rest } = (body || {});
+    return {
+        chat_completion_source: 'custom',
+        custom_url: customUrl,
+        custom_include_headers: JSON.stringify(headers),
+        model,
+        messages,
+        max_tokens,
+        stream: !!stream,
+        ...rest,
+    };
+}
+
+// 经酒馆后端转发的「直连」——非流式。复用直连的 (url, apiKey, body)，走 ST 的 ChatCompletionService（custom 源 + 显式
+// Authorization 头），由酒馆服务器发出 → 无浏览器 CORS、无需连接配置文件 / secret。见 buildBackendForwardPayload。
+async function callBackendForward(url, apiKey, body, signal) {
+    const ctx = getCtx();
+    if (typeof ctx?.ChatCompletionService?.processRequest !== 'function') {
+        throw new Error('此 SillyTavern 版本缺少 ChatCompletionService，无法用后端转发——请取消勾选“经酒馆后端转发”，或改用连接配置文件。');
+    }
+    const payload = buildBackendForwardPayload(url, apiKey, body, false);
+    const result = await ctx.ChatCompletionService.processRequest(payload, { presetName: undefined }, true, signal);
+    return result?.content ?? '';
+}
+
+// 同上——流式。ChatCompletionService 流式返回一个「创建 AsyncGenerator 的函数」，每个 chunk.text 是【累计】全文；
+// 为与 streamDirect 的回调契约一致（onDelta 收【增量】），这里按累计差分算增量再回调。
+async function streamBackendForward(url, apiKey, body, signal, onDelta) {
+    const ctx = getCtx();
+    if (typeof ctx?.ChatCompletionService?.processRequest !== 'function') {
+        throw new Error('此 SillyTavern 版本缺少 ChatCompletionService，无法用后端转发——请取消勾选“经酒馆后端转发”，或改用连接配置文件。');
+    }
+    const payload = buildBackendForwardPayload(url, apiKey, body, true);
+    const gen = await ctx.ChatCompletionService.processRequest(payload, { presetName: undefined }, true, signal);
+    const iterator = (typeof gen === 'function') ? gen() : gen;
+    let prev = '';
+    for await (const chunk of iterator) {
+        if (chunk && typeof chunk.text === 'string') {
+            const delta = chunk.text.slice(prev.length);
+            prev = chunk.text;
+            if (delta) onDelta(delta);
+        }
+    }
+    return prev;
+}
+
+// 同上——弧线「实时输出」专用（onLive({content, reasoning})，均为累计）。ChatCompletionService 把 reasoning 累在
+// chunk.state.reasoning。返回 content 全文（与 streamDirectArc 一致，供 parseArcBeat / parseArcCheck 解析）。
+async function streamBackendForwardArc(url, apiKey, body, signal, onLive) {
+    const ctx = getCtx();
+    if (typeof ctx?.ChatCompletionService?.processRequest !== 'function') {
+        throw new Error('此 SillyTavern 版本缺少 ChatCompletionService，无法用后端转发——请取消勾选“经酒馆后端转发”，或改用连接配置文件。');
+    }
+    const payload = buildBackendForwardPayload(url, apiKey, body, true);
+    const gen = await ctx.ChatCompletionService.processRequest(payload, { presetName: undefined }, true, signal);
+    const iterator = (typeof gen === 'function') ? gen() : gen;
+    let content = '', reasoning = '';
+    for await (const chunk of iterator) {
+        if (chunk && typeof chunk.text === 'string') content = chunk.text;
+        if (chunk && chunk.state && typeof chunk.state.reasoning === 'string' && chunk.state.reasoning) reasoning = chunk.state.reasoning;
+        if (onLive) onLive({ content, reasoning });
+    }
+    return content;
 }
 
 // Derive the OpenAI-compatible models endpoint from whatever the user typed.
@@ -10135,6 +10303,7 @@ async function onFetchModels() {
 }
 
 async function callDirect(url, apiKey, body, signal) {
+    if (getSettings().directViaBackend) return callBackendForward(url, apiKey, body, signal); // 经酒馆后端转发（避免 CORS）
     const res = await fetch(url, {
         method: 'POST',
         headers: directHeaders(apiKey),
@@ -10163,6 +10332,7 @@ function extractNonStreamContent(raw) {
 }
 
 async function streamDirect(url, apiKey, body, signal, onDelta) {
+    if (getSettings().directViaBackend) return streamBackendForward(url, apiKey, body, signal, onDelta); // 经酒馆后端转发（避免 CORS）
     const res = await fetch(url, {
         method: 'POST',
         headers: directHeaders(apiKey),
@@ -10211,6 +10381,7 @@ async function streamDirect(url, apiKey, body, signal, onDelta) {
 // 经 onLive({content, reasoning}) 实时报给查看器——这样窗口在 reasoning 模型上也看得到「在动」，而不是盯着
 // content 卡在空。返回值仍是 content 全文（供 parseArcBeat / parseArcCheck 解析，与非流式完全一致）。
 async function streamDirectArc(url, apiKey, body, signal, onLive) {
+    if (getSettings().directViaBackend) return streamBackendForwardArc(url, apiKey, body, signal, onLive); // 经酒馆后端转发（避免 CORS）
     const res = await fetch(url, { method: 'POST', headers: directHeaders(apiKey), body: JSON.stringify({ ...body, stream: true }), signal });
     if (!res.ok || !res.body) {
         const t = await res.text().catch(() => '');

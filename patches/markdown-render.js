@@ -21,7 +21,8 @@
       soMdConverter = new window.showdown.Converter({
         simpleLineBreaks: true,
         strikethrough: true,
-        tables: false,
+        // 如果md表格不渲染, 就把这个改成true
+        tables: true,
         literalMidWordUnderscores: true,
       });
     }
@@ -77,11 +78,7 @@
       set: function (value) {
         // 渲染前用原生 getter 获取完整原文（含 <plot_outline> 等标签）
         var rawText = baseText.get.call(this);
-        if (
-          rawText &&
-          rawText.trim() &&
-          !this.dataset.originalContent
-        ) {
+        if (rawText && rawText.trim() && !this.dataset.originalContent) {
           this.dataset.originalContent = rawText;
         }
         // 放行渲染
@@ -144,9 +141,7 @@
     var messagesEl = document.querySelector("#so-messages");
     if (!messagesEl) return;
 
-    var contents = messagesEl.querySelectorAll(
-      ".so-assistant .so-content",
-    );
+    var contents = messagesEl.querySelectorAll(".so-assistant .so-content");
     var count = 0;
     for (var i = 0; i < contents.length; i++) {
       // F5 后新插入的元素也要保护
@@ -203,9 +198,7 @@
 
           // 其他容器内可能包含 .so-assistant .so-content
           if (node.querySelectorAll) {
-            var contents = node.querySelectorAll(
-              ".so-assistant .so-content",
-            );
+            var contents = node.querySelectorAll(".so-assistant .so-content");
             for (var k = 0; k < contents.length; k++) {
               protectContentElement(contents[k]);
               processMessage(contents[k]);
