@@ -130,20 +130,74 @@
     return basePrompt;
   }
 
+  // 大纲模式请求重写：把 body.messages 里所有系统消息合并成一条
+  //   「大纲提示词 + 角色卡 + 世界书 + 最近对话记录」
+  // 的系统消息，保留下方的 user / assistant 对话。这样大纲模式下只会有大纲模式的
+  // 提示词（不会混入普通聊天或预设里的其它系统提示词），并且带上世界书内容。
+  // 上下文构建复用 index.js 的同名顶层函数（与普通聊天模式同源、行为一致；index.js
+  // 是经典脚本，顶层 function 均挂在 window 上，与已打补丁的 stripReasoningTags 同理）。
+  async function rewriteForOutlineMode(body) {
+    const pwin = window.parent || window;
+    const outlinePrompt = getOutlineSystemPrompt();
+    const parts = [outlinePrompt];
+
+    let ctx = null;
+    let s = null;
+    try {
+      ctx = typeof pwin.getCtx === "function" ? pwin.getCtx() : null;
+      s = typeof pwin.getSettings === "function" ? pwin.getSettings() : null;
+    } catch (e) {
+      /* 取不到上下文，退化为只发大纲提示词 */
+    }
+
+    if (ctx && s) {
+      try {
+        // 角色卡（角色信息）
+        if (s.includeCard && typeof pwin.buildCardSection === "function") {
+          const card = pwin.buildCardSection(ctx);
+          if (card) parts.push(card);
+        }
+        // 世界书（尊重设置里的「世界书 / 知识库」选项；off 时 buildWorldInfo 返回空串）
+        if (typeof pwin.buildWorldInfo === "function") {
+          const wi = await pwin.buildWorldInfo();
+          if (wi) parts.push("=== 世界书 / 设定 ===\n" + wi);
+        }
+        // 最近的故事对话记录
+        if (typeof pwin.buildTranscript === "function") {
+          const tr = pwin.buildTranscript(ctx, s);
+          if (tr) parts.push("=== 故事对话记录（最新的在最后）===\n" + tr);
+        }
+      } catch (e) {
+        console.warn("[Story Oracle Patch] 大纲模式上下文构建失败:", e);
+      }
+    }
+
+    let systemContent = parts.filter(Boolean).join("\n\n");
+    // 宏替换（与 index.js buildSystemPrompt 保持一致）
+    if (ctx && typeof ctx.substituteParams === "function") {
+      try {
+        systemContent = ctx.substituteParams(systemContent);
+      } catch (e) {
+        /* 宏替换失败则保留原文 */
+      }
+    }
+
+    // 用单一系统消息替换所有系统消息，保留 user / assistant 对话
+    const nonSystem = body.messages.filter((m) => m.role !== "system");
+    body.messages = [{ role: "system", content: systemContent }, ...nonSystem];
+  }
+
   function interceptFetch() {
     window.fetch = async function (url, options) {
       if (options?.method === "POST" && options?.body) {
         try {
           const body = JSON.parse(options.body);
           if (body.messages && Array.isArray(body.messages)) {
-            // 大纲模式下替换系统提示词
+            // 大纲模式：用「大纲提示词 + 故事上下文」重写系统消息，确保只有大纲模式的
+            // 提示词（不混入普通聊天 / 预设里的其它系统提示词），并补上世界书内容。
             if (isOutlineMode()) {
-              const systemMsg = body.messages.find((m) => m.role === "system");
-              if (systemMsg) {
-                const outlinePrompt = getOutlineSystemPrompt();
-                systemMsg.content = outlinePrompt;
-                options.body = JSON.stringify(body);
-              }
+              await rewriteForOutlineMode(body);
+              options.body = JSON.stringify(body);
             }
 
             // 如果开启了开发者选项，输出最终请求内容（所有修改完成后）
