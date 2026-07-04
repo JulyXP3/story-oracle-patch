@@ -199,13 +199,15 @@
                                 <option value="default">默认模板</option>
                             </select>
                         </label>
-                        <button type="button" class="so-btn-secondary" id="so-outline-template-manage">
+                        <button type="button" class="so-fix-run-btn" id="so-outline-template-manage" style="align-self: flex-start; margin-top: 0;">
                             <i class="fa-solid fa-pen-to-square"></i> 管理模板
                         </button>
+                        <div id="so-outline-template-form" style="display:none">
+                        </div>
                         <div style="display: flex; gap: 8px;">
                             <label class="so-checkbox-field" style="flex: 1;">
                                 <input type="checkbox" id="so-outline-use-preset">
-                                <span>套用我的补全预设（大纲提示词叠加其上）</span>
+                                <span>套用补全预设(跟参谋模式同理)</span>
                             </label>
                             <button type="button" class="so-btn-secondary" id="so-outline-fix-tags" title="为AI回复补充或修正标签">
                                 <i class="fa-solid fa-tags"></i> 标签补充(仅限最新一楼)
@@ -374,149 +376,89 @@
                 margin-right: 4px;
             }
 
-            /* 模板管理器对话框样式 */
-            .so-template-manager-overlay {
-                position: fixed;
-                top: 0;
-                left: 0;
-                right: 0;
-                bottom: 0;
-                background: rgba(0, 0, 0, 0.7);
-                display: flex;
-                align-items: center;
-                justify-content: center;
-                z-index: 10000;
-            }
-
-            .so-template-manager {
-                width: 90%;
-                max-width: 800px;
-                height: 80vh;
-                background: var(--SmartThemeBlurTintColor, #1a1a1a);
-                border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.2));
-                border-radius: 12px;
-                display: flex;
+            /* 模板管理内联面板 —— 参照参谋「新建弧线」表单的展开/收起模式，
+               手机上不弹出满屏对话框，而是在按钮下方展开，贴合#so-outline-bar 宽度。 */
+            #so-outline-template-form {
+                display: none;
                 flex-direction: column;
-                overflow: hidden;
-            }
-
-            .so-template-manager-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 16px 20px;
-                border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-            }
-
-            .so-template-manager-header h3 {
-                margin: 0;
-                font-size: 1.2em;
-            }
-
-            .so-template-manager-body {
-                flex: 1;
-                display: flex;
-                overflow: hidden;
-            }
-
-            .so-template-list {
-                width: 250px;
-                border-right: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-                display: flex;
-                flex-direction: column;
-            }
-
-            .so-template-list-header {
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-                padding: 12px;
-                border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.1));
-                font-size: 0.9em;
-            }
-
-            #so-template-items {
-                flex: 1;
-                overflow-y: auto;
-            }
-
-            .so-template-item {
-                padding: 12px;
-                cursor: pointer;
-                border-bottom: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.05));
-                transition: background 0.2s;
-                display: flex;
-                align-items: center;
-                justify-content: space-between;
-            }
-
-            .so-template-item:hover {
-                background: rgba(255, 255, 255, 0.05);
-            }
-
-            .so-template-item.active {
-                background: rgba(74, 222, 128, 0.15);
-                border-left: 3px solid var(--so-outline-accent, #4ade80);
-            }
-
-            .so-template-badge {
-                font-size: 0.75em;
-                padding: 2px 6px;
-                background: rgba(255, 255, 255, 0.1);
-                border-radius: 4px;
-                opacity: 0.7;
-            }
-
-            .so-template-editor {
-                flex: 1;
-                display: flex;
-                flex-direction: column;
-                padding: 16px;
-                gap: 12px;
-            }
-
-            .so-template-editor-header input {
-                width: 100%;
-                padding: 10px;
-                background: rgba(0, 0, 0, 0.3);
-                border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
+                gap: 8px;
+                margin-top: 4px;
+                padding: 9px 10px;
                 border-radius: 8px;
+                border: 1px solid color-mix(in srgb, var(--so-outline-accent) 40%, transparent);
+                background: color-mix(in srgb, var(--so-outline-accent) 8%, transparent);
+            }
+
+            #so-outline-template-form .so-field {
+                display: flex;
+                flex-direction: column;
+                gap: 3px;
+                font-size: 0.82em;
+            }
+
+            #so-outline-template-form .so-field > span {
+                opacity: 0.72;
+            }
+
+            #so-outline-template-form input,
+            #so-outline-template-form textarea,
+            #so-outline-template-form select {
+                width: 100%;
+                box-sizing: border-box;
                 color: var(--SmartThemeBodyColor, #e6e6e6);
-                font-size: 1em;
+                background-color: var(--black30a, rgba(0, 0, 0, 0.3));
+                border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.16));
+                border-radius: 8px;
+                padding: 6px 9px;
                 font-family: inherit;
             }
 
-            #so-template-content {
-                flex: 1;
-                padding: 12px;
-                background: rgba(0, 0, 0, 0.3);
-                border: 1px solid var(--SmartThemeBorderColor, rgba(255, 255, 255, 0.14));
-                border-radius: 8px;
-                color: var(--SmartThemeBodyColor, #e6e6e6);
+            #so-outline-template-form input:focus,
+            #so-outline-template-form textarea:focus,
+            #so-outline-template-form select:focus {
+                outline: none;
+                border-color: var(--so-outline-accent);
+            }
+
+            #so-outline-template-form textarea {
+                resize: vertical;
+                line-height: 1.4;
+                min-height: 120px;
                 font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 0.9em;
-                line-height: 1.5;
-                resize: none;
+                font-size: 0.85em;
             }
 
-            .so-template-editor-actions {
+            .so-outline-template-actions {
                 display: flex;
-                gap: 8px;
-                justify-content: flex-end;
+                gap: 6px;
             }
 
-            .so-btn-danger {
+            .so-outline-template-actions .so-fix-run-btn {
+                flex: 1;
+                margin-top: 0;
+                text-align: center;
+            }
+
+            .so-outline-template-actions .so-btn-danger {
                 background: rgba(220, 38, 38, 0.2);
                 border-color: rgba(220, 38, 38, 0.4);
             }
 
-            .so-btn-danger:hover {
+            .so-outline-template-actions .so-btn-danger:hover {
                 background: rgba(220, 38, 38, 0.3);
             }
 
-            .so-btn-danger:disabled {
+            .so-outline-template-actions .so-btn-danger:disabled {
                 opacity: 0.4;
                 cursor: not-allowed;
+            }
+
+            /* 手机：模板编辑 textarea 压低，避免挤压聊天区 */
+            @media (max-width: 600px) {
+                #so-outline-template-form textarea {
+                    min-height: 100px;
+                    max-height: 30vh;
+                }
             }
 
             /* 隐藏状态的消息样式 */

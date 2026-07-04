@@ -114,167 +114,159 @@
     }
   }
 
-  // 打开模板管理对话框
-  function openTemplateManager() {
-    const templates = getTemplates();
+  // 渲染内联模板管理面板（#so-outline-template-form），参照参谋「新建弧线」的展开/收起模式。
+  // 不再弹出全屏对话框，手机上贴合 #so-outline-bar 宽度、不超出屏幕。
+  function renderTemplateForm() {
+    const form = document.getElementById("so-outline-template-form");
+    if (!form) return;
 
-    const dialog = document.createElement("div");
-    dialog.className = "so-template-manager-overlay";
-    dialog.innerHTML = `
-            <div class="so-template-manager">
-                <div class="so-template-manager-header">
-                    <h3>管理大纲模板</h3>
-                    <button type="button" class="so-iconbtn" id="so-template-close">
-                        <i class="fa-solid fa-xmark"></i>
-                    </button>
-                </div>
-                <div class="so-template-manager-body">
-                    <div class="so-template-list">
-                        <div class="so-template-list-header">
-                            <span>模板列表</span>
-                            <button type="button" class="so-btn-secondary" id="so-template-add">
-                                <i class="fa-solid fa-plus"></i> 新建
-                            </button>
-                        </div>
-                        <div id="so-template-items"></div>
-                    </div>
-                    <div class="so-template-editor">
-                        <div class="so-template-editor-header">
-                            <input type="text" id="so-template-name" placeholder="模板名称" />
-                        </div>
-                        <textarea id="so-template-content" placeholder="模板内容"></textarea>
-                        <div class="so-template-editor-actions">
-                            <button type="button" class="so-btn-secondary" id="so-template-save">
-                                <i class="fa-solid fa-floppy-disk"></i> 保存
-                            </button>
-                            <button type="button" class="so-btn-secondary so-btn-danger" id="so-template-delete">
-                                <i class="fa-solid fa-trash"></i> 删除
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        `;
+    // 每次展开都重读 localStorage，确保编辑期间外部变化不丢失，同时保持事件闭包引用同一份数组。
+    form._templates = getTemplates();
+    const templates = form._templates;
 
-    document.body.appendChild(dialog);
+    // 首次渲染：填充 HTML + 绑定事件（只绑一次）
+    if (!form.dataset.rendered) {
+      form.innerHTML = `
+        <label class="so-field">
+          <span>选择模板</span>
+          <select id="so-template-edit-select"></select>
+        </label>
+        <label class="so-field">
+          <span>模板名称</span>
+          <input type="text" id="so-template-edit-name" placeholder="模板名称">
+        </label>
+        <label class="so-field">
+          <span>模板内容</span>
+          <textarea id="so-template-edit-content" rows="8" placeholder="模板内容"></textarea>
+        </label>
+        <div class="so-outline-template-actions">
+          <button type="button" class="so-fix-run-btn" id="so-template-edit-new">
+            <i class="fa-solid fa-plus"></i> 新建
+          </button>
+          <button type="button" class="so-fix-run-btn" id="so-template-edit-save">
+            <i class="fa-solid fa-floppy-disk"></i> 保存
+          </button>
+          <button type="button" class="so-fix-run-btn so-btn-danger" id="so-template-edit-delete">
+            <i class="fa-solid fa-trash"></i> 删除
+          </button>
+        </div>
+      `;
+      form.dataset.rendered = "true";
 
-    let currentTemplateId = templates[0]?.id;
+      // 绑定事件（只绑一次，通过 form._templates 读写数据）
+      const selectEl = form.querySelector("#so-template-edit-select");
+      const nameEl = form.querySelector("#so-template-edit-name");
+      const contentEl = form.querySelector("#so-template-edit-content");
 
-    // 渲染模板列表
-    function renderTemplateList() {
-      const container = dialog.querySelector("#so-template-items");
-      container.innerHTML = "";
-
-      templates.forEach((template) => {
-        const item = document.createElement("div");
-        item.className = "so-template-item";
-        if (template.id === currentTemplateId) {
-          item.classList.add("active");
+      // 切换模板 → 加载到编辑器
+      selectEl.addEventListener("change", () => {
+        const arr = form._templates || [];
+        const t = arr.find((t) => t.id === selectEl.value);
+        if (t) {
+          nameEl.value = t.name;
+          contentEl.value = t.content;
+          form.querySelector("#so-template-edit-delete").disabled = t.id === "default";
         }
-        item.innerHTML = `
-                    <span>${template.name}</span>
-                    ${template.id === "default" ? '<span class="so-template-badge">默认</span>' : ""}
-                `;
-        item.addEventListener("click", () => {
-          currentTemplateId = template.id;
-          renderTemplateList();
-          loadTemplateToEditor(template);
-        });
-        container.appendChild(item);
       });
-    }
 
-    // 加载模板到编辑器
-    function loadTemplateToEditor(template) {
-      dialog.querySelector("#so-template-name").value = template.name;
-      dialog.querySelector("#so-template-content").value = template.content;
-
-      const deleteBtn = dialog.querySelector("#so-template-delete");
-      deleteBtn.disabled = template.id === "default";
-    }
-
-    renderTemplateList();
-    if (templates[0]) {
-      loadTemplateToEditor(templates[0]);
-    }
-
-    // 关闭对话框
-    dialog.querySelector("#so-template-close").addEventListener("click", () => {
-      dialog.remove();
-    });
-
-    // 点击遮罩关闭
-    dialog.addEventListener("click", (e) => {
-      if (e.target === dialog) {
-        dialog.remove();
-      }
-    });
-
-    // 新建模板
-    dialog.querySelector("#so-template-add").addEventListener("click", () => {
-      const newTemplate = addTemplate("新模板", "");
-      templates.push(newTemplate);
-      currentTemplateId = newTemplate.id;
-      renderTemplateList();
-      loadTemplateToEditor(newTemplate);
-      refreshTemplateSelector();
-    });
-
-    // 保存模板
-    dialog.querySelector("#so-template-save").addEventListener("click", () => {
-      const name = dialog.querySelector("#so-template-name").value.trim();
-      const content = dialog.querySelector("#so-template-content").value;
-
-      if (!name) {
-        alert("请输入模板名称");
-        return;
-      }
-
-      updateTemplate(currentTemplateId, { name, content });
-
-      const template = templates.find((t) => t.id === currentTemplateId);
-      if (template) {
-        template.name = name;
-        template.content = content;
-      }
-
-      renderTemplateList();
-      refreshTemplateSelector();
-      console.log("[Outline Templates] 模板已保存");
-    });
-
-    // 删除模板
-    dialog
-      .querySelector("#so-template-delete")
-      .addEventListener("click", () => {
-        if (currentTemplateId === "default") return;
-
-        if (!confirm("确定要删除这个模板吗？")) return;
-
-        deleteTemplate(currentTemplateId);
-        const index = templates.findIndex((t) => t.id === currentTemplateId);
-        if (index !== -1) {
-          templates.splice(index, 1);
-        }
-
-        currentTemplateId = templates[0]?.id;
-        renderTemplateList();
-        if (templates[0]) {
-          loadTemplateToEditor(templates[0]);
-        }
+      // 新建
+      form.querySelector("#so-template-edit-new").addEventListener("click", () => {
+        const arr = form._templates || [];
+        const newTpl = addTemplate("新模板", "");
+        arr.push(newTpl);
+        populateTemplateSelect(selectEl, arr, newTpl.id);
+        nameEl.value = newTpl.name;
+        contentEl.value = newTpl.content;
+        form.querySelector("#so-template-edit-delete").disabled = true;
         refreshTemplateSelector();
       });
+
+      // 保存
+      form.querySelector("#so-template-edit-save").addEventListener("click", () => {
+        const id = selectEl.value;
+        const name = nameEl.value.trim();
+        const content = contentEl.value;
+        if (!name) {
+          alert("请输入模板名称");
+          return;
+        }
+        updateTemplate(id, { name, content });
+        const arr = form._templates || [];
+        const t = arr.find((t) => t.id === id);
+        if (t) { t.name = name; t.content = content; }
+        populateTemplateSelect(selectEl, arr, id);
+        refreshTemplateSelector();
+      });
+
+      // 删除
+      form.querySelector("#so-template-edit-delete").addEventListener("click", () => {
+        const id = selectEl.value;
+        if (id === "default") return;
+        if (!confirm("确定要删除这个模板吗？")) return;
+        deleteTemplate(id);
+        const arr = form._templates || [];
+        const idx = arr.findIndex((t) => t.id === id);
+        if (idx !== -1) arr.splice(idx, 1);
+        const nextId = arr[0]?.id;
+        populateTemplateSelect(selectEl, arr, nextId);
+        const t = arr.find((t) => t.id === nextId);
+        if (t) {
+          nameEl.value = t.name;
+          contentEl.value = t.content;
+        }
+        form.querySelector("#so-template-edit-delete").disabled = (nextId === "default");
+        refreshTemplateSelector();
+      });
+    }
+
+    // 每次展开：刷新下拉列表 + 编辑器内容
+    const selectEl = form.querySelector("#so-template-edit-select");
+    const currentSelected = document.getElementById("so-outline-template-select")?.value || "default";
+    const targetId = templates.find((t) => t.id === currentSelected)
+      ? currentSelected
+      : (templates[0]?.id || "default");
+    populateTemplateSelect(selectEl, templates, targetId);
+    const t = templates.find((t) => t.id === targetId);
+    if (t) {
+      form.querySelector("#so-template-edit-name").value = t.name;
+      form.querySelector("#so-template-edit-content").value = t.content;
+      form.querySelector("#so-template-edit-delete").disabled = t.id === "default";
+    }
+  }
+
+  // 填充模板选择下拉框
+  function populateTemplateSelect(selectEl, templates, selectedId) {
+    selectEl.innerHTML = "";
+    templates.forEach((t) => {
+      const opt = document.createElement("option");
+      opt.value = t.id;
+      opt.textContent = t.name + (t.id === "default" ? "（默认）" : "");
+      selectEl.appendChild(opt);
+    });
+    if (selectedId && templates.find((t) => t.id === selectedId)) {
+      selectEl.value = selectedId;
+    }
   }
 
   // 初始化
   function initTemplateManager() {
     const manageBtn = document.getElementById("so-outline-template-manage");
-    if (manageBtn) {
-      manageBtn.addEventListener("click", openTemplateManager);
-    }
+    const form = document.getElementById("so-outline-template-form");
+    if (!manageBtn || !form) return;
+
+    // 点击按钮：切换展开/收起（参照 so-arc-new 的 toggle 行为）
+    manageBtn.addEventListener("click", () => {
+      const isOpen = form.style.display === "flex";
+      if (isOpen) {
+        form.style.display = "none";
+      } else {
+        renderTemplateForm();
+        form.style.display = "flex";
+      }
+    });
 
     refreshTemplateSelector();
-    console.log("[Outline Templates] 模板管理器已初始化");
+    console.log("[Outline Templates] 模板管理器已初始化（内联展开模式）");
   }
 
   window.StoryOraclePatch = window.StoryOraclePatch || {};
