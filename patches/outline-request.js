@@ -150,6 +150,46 @@
     return win?.classList.contains("so-outline-on");
   }
 
+  // === 区分「神谕自己的请求」与「主聊天请求」===
+  // 大纲模式的请求改写挂在全局 window.fetch 拦截器上，会捕到所有 POST。若只看 isOutlineMode()，
+  // 用户没退大纲模式、收起神谕面板去聊主聊天时，主聊天请求也会被改写成大纲提示词（重大 bug）。
+  // 解法：包裹 index.js 的 generateReply（神谕生成的唯一入口），仅在它执行期间置标记；
+  // 主聊天走的是 ST 自己的 Generate、不经过 generateReply → 标记为 false → 拦截器不改写。
+  function isOracleGenerating() {
+    const pwin = window.parent || window;
+    return !!pwin._soOracleGenerating;
+  }
+
+  function wrapGenerateReply() {
+    const pwin = window.parent || window;
+    if (typeof pwin.generateReply !== "function") return false;
+    if (pwin.generateReply._soWrapped) return true;
+    const orig = pwin.generateReply;
+    pwin.generateReply = async function (...args) {
+      pwin._soOracleGenerating = true;
+      try {
+        return await orig.apply(this, args);
+      } finally {
+        pwin._soOracleGenerating = false;
+      }
+    };
+    pwin.generateReply._soWrapped = true;
+    console.log("[Story Oracle Patch] generateReply 已包裹（用于区分神谕 / 主聊天请求）");
+    return true;
+  }
+
+  // 补丁先于 index.js 加载，generateReply 此刻还不存在 —— 轮询等它就绪后再裹。
+  function ensureWrapGenerateReply() {
+    if (wrapGenerateReply()) return;
+    if (ensureWrapGenerateReply._timer) return;
+    ensureWrapGenerateReply._timer = setInterval(() => {
+      if (wrapGenerateReply()) {
+        clearInterval(ensureWrapGenerateReply._timer);
+        ensureWrapGenerateReply._timer = null;
+      }
+    }, 500);
+  }
+
   function getOutlineSystemPrompt() {
     const usePresetCheckbox = document.getElementById("so-outline-use-preset");
     const usePreset = usePresetCheckbox?.checked;
@@ -299,7 +339,9 @@
           if (body.messages && Array.isArray(body.messages)) {
             // 大纲模式：用「大纲提示词 + 故事上下文」重写系统消息，确保只有大纲模式的
             // 提示词（不混入普通聊天 / 预设里的其它系统提示词），并补上世界书内容。
-            if (isOutlineMode()) {
+            // 必须同时满足 isOutlineMode()（大纲模式激活）与 isOracleGenerating()（是神谕自己的
+            // generateReply 发出的请求）——否则会误改主聊天请求（用户收起面板去聊主聊天时命中）。
+            if (isOutlineMode() && isOracleGenerating()) {
               await rewriteForOutlineMode(body);
               options.body = JSON.stringify(body);
             }
@@ -346,6 +388,7 @@
 
     interceptFetch();
     patchStripReasoningTags();
+    ensureWrapGenerateReply();
     console.log("[Story Oracle Patch] 大纲模式初始化成功");
   }
 
