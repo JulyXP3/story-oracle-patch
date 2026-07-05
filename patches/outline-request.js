@@ -171,6 +171,12 @@
         return await orig.apply(this, args);
       } finally {
         pwin._soOracleGenerating = false;
+        // 一次生成结束：作废上下文缓存，避免跨请求拿到旧世界书 / 旧对话记录
+        _ctxCache.wi = null;
+        _ctxCache.wiKey = null;
+        _ctxCache.tr = null;
+        _ctxCache.trS = null;
+        _ctxCache.trKeep = undefined;
       }
     };
     pwin.generateReply._soWrapped = true;
@@ -186,6 +192,133 @@
       if (wrapGenerateReply()) {
         clearInterval(ensureWrapGenerateReply._timer);
         ensureWrapGenerateReply._timer = null;
+      }
+    }, 500);
+  }
+
+  // === 上下文构建去重（Fix B）===
+  // 大纲模式下 SO 的 chat 分支会先构建一次世界书 / 对话记录（buildWorldInfo /
+  // buildTranscript，经 buildSystemPrompt→buildMessages），紧接着本补丁的 fetch
+  // 拦截器又构建一次（rewriteForOutlineMode）。两次调用参数完全一致、间隔毫秒级、
+  // 世界书不可能在期间变化。用 _soOracleGenerating 标志把缓存窗口卡在一次
+  // generateReply 内：第一次填缓存、第二次命中，省掉一次世界书扫描 + 一次对话记录构建。
+  // 缓存按参数 key（buildWorldInfo）/ s 引用 + keepMechanism（buildTranscript）隔离，
+  // 不同参数不会串味；窗口结束（finally）即清空。
+  const _ctxCache = {
+    wi: null,
+    wiKey: null,
+    tr: null,
+    trS: null,
+    trKeep: undefined,
+  };
+
+  function wrapContextBuilders() {
+    const pwin = window.parent || window;
+
+    if (
+      typeof pwin.buildWorldInfo === "function" &&
+      !pwin.buildWorldInfo._soMemoized
+    ) {
+      const origWI = pwin.buildWorldInfo;
+      pwin.buildWorldInfo = async function (...args) {
+        const key = JSON.stringify(args) || "none";
+        if (
+          pwin._soOracleGenerating &&
+          _ctxCache.wi != null &&
+          _ctxCache.wiKey === key
+        ) {
+          return _ctxCache.wi;
+        }
+        const result = await origWI.apply(this, args);
+        if (pwin._soOracleGenerating) {
+          _ctxCache.wi = result;
+          _ctxCache.wiKey = key;
+        }
+        return result;
+      };
+      pwin.buildWorldInfo._soMemoized = true;
+    }
+
+    if (
+      typeof pwin.buildTranscript === "function" &&
+      !pwin.buildTranscript._soMemoized
+    ) {
+      const origTR = pwin.buildTranscript;
+      pwin.buildTranscript = function (ctx, s, keepMechanism) {
+        // 一次 generateReply 内 ctx/s 是同一对象，用 s 引用 + keepMechanism 做 key
+        if (
+          pwin._soOracleGenerating &&
+          _ctxCache.tr != null &&
+          _ctxCache.trS === s &&
+          _ctxCache.trKeep === keepMechanism
+        ) {
+          return _ctxCache.tr;
+        }
+        const result = origTR.call(this, ctx, s, keepMechanism);
+        if (pwin._soOracleGenerating) {
+          _ctxCache.tr = result;
+          _ctxCache.trS = s;
+          _ctxCache.trKeep = keepMechanism;
+        }
+        return result;
+      };
+      pwin.buildTranscript._soMemoized = true;
+    }
+
+    return (
+      typeof pwin.buildWorldInfo === "function" &&
+      !!pwin.buildWorldInfo._soMemoized &&
+      typeof pwin.buildTranscript === "function" &&
+      !!pwin.buildTranscript._soMemoized
+    );
+  }
+
+  function ensureWrapContextBuilders() {
+    if (wrapContextBuilders()) return;
+    if (ensureWrapContextBuilders._timer) return;
+    ensureWrapContextBuilders._timer = setInterval(() => {
+      if (wrapContextBuilders()) {
+        clearInterval(ensureWrapContextBuilders._timer);
+        ensureWrapContextBuilders._timer = null;
+      }
+    }, 500);
+  }
+
+  // === scrollToBottom raf 合流（Fix C）===
+  // 流式时 onDelta 每 token 调一次 scrollToBottom，每次读 scrollHeight 触发强制重排。
+  // 合流到一帧最多一次：原生 scrollToBottom 的 soProgScroll 时序逻辑原样保留
+  // （在 raf 回调里整段调原函数 —— 它同步置 soProgScroll=true、设 scrollTop、下帧清零）。
+  let _soScrollRaf = 0;
+  function wrapScrollToBottom() {
+    const pwin = window.parent || window;
+    if (typeof pwin.scrollToBottom !== "function") return false;
+    if (pwin.scrollToBottom._soCoalesced) return true;
+    const orig = pwin.scrollToBottom;
+    pwin.scrollToBottom = function () {
+      if (_soScrollRaf) return;
+      _soScrollRaf = 1;
+      const run = () => {
+        _soScrollRaf = 0;
+        orig.call(this);
+      };
+      if (typeof window.requestAnimationFrame === "function") {
+        window.requestAnimationFrame(run);
+      } else {
+        setTimeout(run, 16);
+      }
+    };
+    pwin.scrollToBottom._soCoalesced = true;
+    console.log("[Story Oracle Patch] scrollToBottom 已合流到 raf（流式每帧最多一次）");
+    return true;
+  }
+
+  function ensureWrapScrollToBottom() {
+    if (wrapScrollToBottom()) return;
+    if (ensureWrapScrollToBottom._timer) return;
+    ensureWrapScrollToBottom._timer = setInterval(() => {
+      if (wrapScrollToBottom()) {
+        clearInterval(ensureWrapScrollToBottom._timer);
+        ensureWrapScrollToBottom._timer = null;
       }
     }, 500);
   }
@@ -389,6 +522,8 @@
     interceptFetch();
     patchStripReasoningTags();
     ensureWrapGenerateReply();
+    ensureWrapContextBuilders();
+    ensureWrapScrollToBottom();
     console.log("[Story Oracle Patch] 大纲模式初始化成功");
   }
 

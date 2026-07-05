@@ -81,6 +81,8 @@
         if (rawText && rawText.trim() && !this.dataset.originalContent) {
           this.dataset.originalContent = rawText;
         }
+        // 渲染后 DOM 文本已变成 HTML 的文本内容，作废流式累积缓存（_soFull）
+        this._soFull = null;
         // 放行渲染
         baseHTML.set.call(this, value);
       },
@@ -88,16 +90,37 @@
       enumerable: true,
     });
 
-    // 重写 textContent getter：有原文时返回原文（含完整标签）
+    // 重写 textContent：getter 有原文时返原文；setter 走「追加检测」。
+    // 流式时 index.js 用 `contentEl.textContent += delta` 每 token 读写整段，
+    // 是 O(n) 且触发整段重排。检测到「新值 = 缓存全文 + 后缀」时改成 appendChild
+    // 一个文本节点（O(1)、只新增不重排整段），最终 textContent 与原生 setter 完全等价。
+    // 非追加（首次 / 整段替换 / 编辑）走原生 setter 并重置缓存。
     Object.defineProperty(contentEl, "textContent", {
       get: function () {
         if (this.dataset.originalContent) {
           return this.dataset.originalContent;
         }
+        if (this._soFull != null) {
+          return this._soFull;
+        }
         return baseText.get.call(this);
       },
       set: function (value) {
-        baseText.set.call(this, value);
+        if (value == null) value = "";
+        var cached = this._soFull;
+        if (
+          cached != null &&
+          cached.length > 0 &&
+          value.length > cached.length &&
+          value.startsWith(cached)
+        ) {
+          // 流式追加：只把后缀挂成一个新文本节点，不动既有内容
+          this.appendChild(document.createTextNode(value.slice(cached.length)));
+          this._soFull = value;
+        } else {
+          baseText.set.call(this, value);
+          this._soFull = value;
+        }
       },
       configurable: true,
       enumerable: true,
