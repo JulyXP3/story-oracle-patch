@@ -102,7 +102,7 @@
     hint.className = "so-hint";
     hint.style.marginTop = "4px";
     hint.textContent =
-      "保存当前直连配置（URL / 密钥 / 模型）为预设，方便快速切换";
+      "保存当前连接配置（URL / 密钥 / 模型）为预设，方便快速切换。所有连接模式均可用。";
 
     presetContainer.appendChild(label);
     presetContainer.appendChild(select);
@@ -165,14 +165,12 @@
     updatePresetList();
   }
 
-  // 更新预设UI可见性（只在直连模式下显示）
+  // 更新预设UI可见性（所有连接模式下均显示）
   function updatePresetVisibility() {
-    const modeSelect = document.getElementById("so-mode");
     const presetContainer = document.getElementById("so-preset-container");
-    if (!modeSelect || !presetContainer) return;
+    if (!presetContainer) return;
 
-    const isDirect = modeSelect.value === "direct";
-    presetContainer.style.display = isDirect ? "block" : "none";
+    presetContainer.style.display = "block";
   }
 
   // 从 localStorage 加载预设（防御：确保返回纯对象，拒绝数组 / 非对象值）
@@ -219,11 +217,23 @@
     }
   }
 
+  // 获取当前实际使用的字段 ID（根据当前模式 / 最终模式）
+  function getActiveFieldIds() {
+    const s = (typeof getSettings === "function") ? getSettings() : {};
+    const isFinal = s._useFinalMode || (document.getElementById("so-mode")?.value === "final");
+    if (isFinal) {
+      return { endpointId: "so-endpoint-final", apikeyId: "so-apikey-final", modelId: "so-model-final" };
+    }
+    // direct 或 profile 模式 —— profile 没有 endpoint/apikey/model 字段，但至少保存当前有的
+    return { endpointId: "so-endpoint", apikeyId: "so-apikey", modelId: "so-model" };
+  }
+
   // 保存当前配置为预设
   function savePreset(name) {
-    const endpoint = document.getElementById("so-endpoint")?.value || "";
-    const apikey = document.getElementById("so-apikey")?.value || "";
-    const model = document.getElementById("so-model")?.value || "";
+    const ids = getActiveFieldIds();
+    const endpoint = document.getElementById(ids.endpointId)?.value || "";
+    const apikey = document.getElementById(ids.apikeyId)?.value || "";
+    const model = document.getElementById(ids.modelId)?.value || "";
 
     if (!endpoint && !apikey && !model) {
       alert("当前配置为空，无法保存");
@@ -249,9 +259,10 @@
       return;
     }
 
-    const endpointEl = document.getElementById("so-endpoint");
-    const apikeyEl = document.getElementById("so-apikey");
-    const modelEl = document.getElementById("so-model");
+    const ids = getActiveFieldIds();
+    const endpointEl = document.getElementById(ids.endpointId);
+    const apikeyEl = document.getElementById(ids.apikeyId);
+    const modelEl = document.getElementById(ids.modelId);
 
     if (endpointEl) {
       endpointEl.value = preset.endpoint || "";

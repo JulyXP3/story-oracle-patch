@@ -67,6 +67,7 @@
     "patches/message-actions.js",
     "patches/actions-bottom.js",
     "patches/markdown-render.js",
+    "patches/final-mode.js",
   ];
 
   // 加载脚本
@@ -149,6 +150,10 @@
 
       if (patch.addConnectionPresets) {
         patch.addConnectionPresets();
+      }
+
+      if (patch.addFinalMode) {
+        patch.addFinalMode();
       }
 
       // 初始化完成后触发一次模式切换，确保状态正确
