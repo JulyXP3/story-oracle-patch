@@ -1,4 +1,4 @@
-# 本插件已永久停更 ! ! ! 请移步[新版](https://github.com/JulyXP3/story-oracle-outline)
+
 
 ```go
 这里是SillyTavern 扩展 - 故事神谕（Story Oracle）插件的二改
@@ -6,7 +6,7 @@
 已获得作者授权进行二改
 禁止商业化
 ```
-
+~~本插件已永久停更 ! ! ! 请移步[新版](https://github.com/JulyXP3/story-oracle-outline)~~
 原作者: namelessone88
 原仓库地址: [故事神谕仓库](https://github.com/namelessone88/story-oracle)
 原discord帖子链接: [故事神谕帖子](https://discord.com/channels/1134557553011998840/1512227308612620389)
