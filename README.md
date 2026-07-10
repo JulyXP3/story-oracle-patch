@@ -6,7 +6,7 @@
 已获得作者授权进行二改
 禁止商业化
 ```
-~~本插件已永久停更 ! ! ! 请移步[新版](https://github.com/JulyXP3/story-oracle-outline)~~
+# 本插件已永久停更 ! ! ! 请移步[新版](https://github.com/JulyXP3/story-oracle-outline)
 
 原作者: namelessone88
 
